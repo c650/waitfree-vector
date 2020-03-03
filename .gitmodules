@@ -1,0 +1,3 @@
+[submodule "mrlock"]
+	path = mrlock
+	url = http://cse.eecs.ucf.edu/gitlab/deli/mrlock.git
