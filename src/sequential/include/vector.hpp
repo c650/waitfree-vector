@@ -1,0 +1,71 @@
+template <class T>
+struct vector {
+    
+    //data stuff
+    T* data;
+    size_t sz, cap; //capacity is the actual size of data
+
+    /********* begin constructors *********/
+    vector(size_t sz): 
+        sz(sz), cap(sz) {
+        if(sz < 0) throw; //check for negative size
+        data = new T[cap];
+        std::fill(data, data + cap, NULL);
+    }
+    vector():
+        vector(0) {}
+    /********* end constructors *********/
+
+    /********* begin internal functions *********/
+    void resize(size_t new_cap) {
+        if(new_cap < cap) {
+            sz = new_cap;
+            return;
+        }
+        T* new_data = new T[new_cap];
+        for(int i = 0; i < cap; ++i) {
+            new_data[i] = data[i];
+        }
+        delete[] data;
+        data = new_data;
+        cap = new_cap;
+    }
+    void increase_cap() { //this is called when capacity is implicitly increased
+        size_t new_cap = cap * 2 + 1;
+        resize(new_cap);
+    }
+    void check_cap() {
+        if(sz >= cap) {
+            increase_cap();
+        }
+    }
+    /********* end internal functions *********/
+
+    /********* begin vector functions *********/
+    void push_back(T x) {
+        check_cap();
+        data[sz++] = x;
+    }
+    void pop_back() {
+        if(sz == 0) {
+            throw; //empty vector
+        }
+        --sz;
+    }
+    void clear() {
+        resize(0);
+    }
+    T at(int pos) {
+        if(pos < 0 || pos >= sz) {
+            throw; //out of bounds
+        }
+        return data[pos];
+    }
+    size_t size() {
+        return sz;
+    }
+    size_t capacity() {
+        return cap;
+    }
+    /********* end vector functions *********/
+};
