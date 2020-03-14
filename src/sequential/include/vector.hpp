@@ -11,7 +11,7 @@ struct vector {
         if(sz < 0) throw; //check for negative size
         data = new T*[cap]();
     }
-    vector():
+    vector(void):
         vector(0) {}
     ~vector(void) {
         delete[] data;
@@ -32,11 +32,11 @@ struct vector {
         data = new_data;
         cap = new_cap;
     }
-    void increase_cap() { //this is called when capacity is implicitly increased
+    void increase_cap(void) { //this is called when capacity is implicitly increased
         size_t new_cap = cap * 2 + 1;
         resize(new_cap);
     }
-    void check_cap() {
+    void check_cap(void) {
         if(sz >= cap) {
             increase_cap();
         }
@@ -48,13 +48,13 @@ struct vector {
         check_cap();
         data[sz++] = new T(x);
     }
-    void pop_back() {
+    void pop_back(void) {
         if(sz == 0) {
             throw; //empty vector
         }
         --sz;
     }
-    void clear() {
+    void clear(void) {
         resize(0);
     }
     T& at(int pos) {
@@ -63,10 +63,10 @@ struct vector {
         }
         return *data[pos];
     }
-    size_t size() {
+    size_t size(void) {
         return sz;
     }
-    size_t capacity() {
+    size_t capacity(void) {
         return cap;
     }
     T& operator[](int pos) {
