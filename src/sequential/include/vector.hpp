@@ -57,8 +57,8 @@ struct vector {
     void clear() {
         resize(0);
     }
-    T at(int pos) {
-        if(pos < 0 || pos >= sz) {
+    T& at(int pos) {
+        if(pos < 0 || pos >= sz || data[pos] == nullptr) {
             throw; //out of bounds
         }
         return *data[pos];
@@ -69,11 +69,8 @@ struct vector {
     size_t capacity() {
         return cap;
     }
-    T*& operator[](int pos) {
-        if(pos < 0 || pos >= sz) {
-            throw; //out of bounds
-        }
-        return data[pos];
+    T& operator[](int pos) {
+        return at(pos);
     }
     /********* end vector functions *********/
 };
