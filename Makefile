@@ -21,8 +21,8 @@ ensure_dirs:
 	mkdir -p bin
 
 format:
-	find -type f -path "./src/*" -name "*.cpp" | xargs clang-format --style=file
-	find -type f -path "./src/*" -name "*.hpp" | xargs clang-format --style=file
+	find -type f -path "./src/*" -name "*.cpp" | xargs clang-format -i --style=file
+	find -type f -path "./src/*" -name "*.hpp" | xargs clang-format -i --style=file
 
 sequential: ensure_dirs
 	${CC} ${SEQ_SRC} ${CFLAGS} -o ${SEQ_OUT}
