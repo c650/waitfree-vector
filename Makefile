@@ -25,7 +25,8 @@ format:
 	find -type f -path "./src/*" -name "*.hpp" | xargs clang-format -i --style=file
 
 sequential: ensure_dirs
-	${CC} ${SEQ_SRC} ${CFLAGS} -o ${SEQ_OUT}
+	$(MAKE) -C mrlock/
+	${CC} -I mrlock/src/ ${SEQ_SRC} mrlock/src/strategy/*.o ${CFLAGS} -o ${SEQ_OUT}
 
 concurrent: ensure_dirs
 	${CC} ${CON_SRC} ${CFLAGS} -o ${CON_OUT}
