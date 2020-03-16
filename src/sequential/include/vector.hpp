@@ -20,8 +20,6 @@ namespace sequential {
 
     /********* begin constructors *********/
     vector(std::size_t sz) : sz(sz), cap(sz) {
-      if (sz < 0)
-        throw; // check for negative size
       data = new T*[cap]();
 
       resource_alloc = new MRResourceAllocator(1);
@@ -82,7 +80,7 @@ namespace sequential {
       my_lock->Lock();
       if (sz == 0) {
         my_lock->Unlock();
-        throw; // empty vector
+        throw std::out_of_range{"vector is empty"}; // empty vector
       }
 
       --sz;
@@ -130,8 +128,8 @@ namespace sequential {
 
       check_cap();
 
-      for (auto i = sz - 1; i >= pos; --i) {
-        data[i + 1] = data[i];
+      for (int i = sz; i > static_cast<int>(pos); --i) {
+        data[i] = data[i - 1];
       }
 
       data[pos] = x;
@@ -147,6 +145,9 @@ namespace sequential {
       if (pos < 0 || pos >= sz) {
         std::stringstream ss;
         ss << "cannot erase at position " << pos << " in vector of size " << sz;
+
+        my_lock->Unlock();
+
         throw std::out_of_range{ss.str()};
       }
 
