@@ -55,6 +55,8 @@ Our implementation supports the following operations:
 - capacity()
   - returns the actual size of the underlying array used to store the vector's elements.
 
+All operations do bounds checking and throw accordingly.
+
 ---
 
 ### Implementation
