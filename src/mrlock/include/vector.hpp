@@ -4,16 +4,26 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace sequential {
+#include <strategy/lockablebase.h>
+#include <strategy/mrlockable.h>
+
+namespace blocking {
   template <typename T>
   struct vector {
     // data stuff
     T** data;
     std::size_t sz, cap; // capacity is the actual size of data
 
+    ResourceAllocatorBase* resource_alloc;
+
+    LockableBase* my_lock;
+
     /********* begin constructors *********/
     vector(std::size_t sz) : sz(sz), cap(sz) {
       data = new T*[cap]();
+
+      resource_alloc = new MRResourceAllocator(1);
+      my_lock = resource_alloc->CreateLockable({0});
     }
 
     vector(void) : vector(0) {
@@ -21,6 +31,7 @@ namespace sequential {
 
     ~vector(void) {
       delete[] data;
+      delete resource_alloc;
     }
     /********* end constructors *********/
 
@@ -57,31 +68,44 @@ namespace sequential {
   public:
     /********* begin vector functions *********/
     void push_back(T* const x) {
+      my_lock->Lock();
+
       check_cap();
       data[sz++] = x;
+
+      my_lock->Unlock();
     }
 
     void pop_back(void) {
+      my_lock->Lock();
       if (sz == 0) {
+        my_lock->Unlock();
         throw std::out_of_range{"vector is empty"}; // empty vector
       }
 
       --sz;
+      my_lock->Unlock();
     }
 
     void clear(void) {
+      my_lock->Lock();
       resize(0);
+      my_lock->Unlock();
     }
 
     T* at(std::size_t pos) {
+      my_lock->Lock();
       if (pos < 0 || pos >= sz) {
         std::stringstream ss;
         ss << "position " << pos << " is invalid for vector of size " << sz;
+
+        my_lock->Unlock();
 
         throw std::out_of_range{ss.str()};
       }
 
       auto ret = data[pos];
+      my_lock->Unlock();
 
       return ret;
     }
@@ -91,11 +115,14 @@ namespace sequential {
     }
 
     void insert(std::size_t pos, T* const x) {
+      my_lock->Lock();
+
       if (pos < 0 || pos > sz) {
         std::stringstream ss;
         ss << "cannot insert at position " << pos << " for vector of size "
            << sz;
 
+        my_lock->Unlock();
         throw std::out_of_range{ss.str()};
       }
 
@@ -108,12 +135,18 @@ namespace sequential {
       data[pos] = x;
 
       ++sz;
+
+      my_lock->Unlock();
     }
 
     void erase(std::size_t pos) {
+      my_lock->Lock();
+
       if (pos < 0 || pos >= sz) {
         std::stringstream ss;
         ss << "cannot erase at position " << pos << " in vector of size " << sz;
+
+        my_lock->Unlock();
 
         throw std::out_of_range{ss.str()};
       }
@@ -123,6 +156,8 @@ namespace sequential {
       }
 
       --sz;
+
+      my_lock->Unlock();
     }
 
     std::size_t size(void) {
