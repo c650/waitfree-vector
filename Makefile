@@ -1,6 +1,6 @@
 
 CC=g++
-CFLAGS= --std=c++17 -Wall -Werror -Ofast -lpthread
+CFLAGS= --std=c++17 -Wall -Werror -Ofast -lpthread -g
 
 SEQ_SRC=src/sequential/*.cpp
 MRL_SRC=src/mrlock/*.cpp

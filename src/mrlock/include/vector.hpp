@@ -32,6 +32,7 @@ namespace blocking {
     ~vector(void) {
       delete[] data;
       delete resource_alloc;
+      delete my_lock;
     }
     /********* end constructors *********/
 
@@ -152,7 +153,7 @@ namespace blocking {
       }
 
       for (auto i = pos; i + 1 < sz; ++i) {
-        data[pos] = data[pos + 1];
+        data[i] = data[i + 1];
       }
 
       --sz;

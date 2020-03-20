@@ -7,11 +7,10 @@
 int main(void) {
   blocking::vector<int> v;
 
-  auto go = [&](int id) {
+  auto go = [&](int id, int* me) {
     std::mt19937 gen(id);
 
     std::vector<int> got;
-    int* me = new int{id};
 
     for (int i = 0; i < 10000; ++i) {
       const int pick = gen() % 5;
@@ -37,8 +36,10 @@ int main(void) {
   };
 
   std::vector<std::thread> t;
+  std::vector<int*> me;
   for (int i = 0; i < 4; ++i) {
-    t.push_back(std::thread(go, i));
+    me.push_back(new int(i));
+    t.push_back(std::thread(go, i, me.back()));
   }
 
   for (auto& e : t) {
@@ -56,6 +57,10 @@ int main(void) {
     }
   }
   std::cout << "\n";
+
+  for (int* m : me) {
+    delete m;
+  }
 
   return 0;
 }
