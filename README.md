@@ -21,6 +21,8 @@ Our data structure is a vector. It has O(1) random access, amortised O(1) tail o
 
 The sequential version is in [src/sequential](src/sequential); the thread-safe blocking version is in [src/mrlock](src/mrlock).
 
+Build the sequential with `make sequential` and the mrlock one with `make mrlock`. Binaries go into [bin/](/bin/).
+
 ### Design
 
 Due to our need to maintain the contiguity property of the vector, at this time we have not found a better locking design than simply locking the entire vector. This is because some operations affect the _entire_ structure.
