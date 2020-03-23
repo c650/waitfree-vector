@@ -34,9 +34,11 @@ namespace waitfree {
   }
 
   // virtual types
+  template <typename T>
   struct base_descriptor {
     virtual DescriptorType type(void) const = 0;
     virtual bool complete(void) = 0;
+    virtual T* value(void) const = 0;
   };
 
   struct base_op {
@@ -56,7 +58,7 @@ namespace waitfree {
 
   // descriptor implementations
   template <typename T>
-  struct PopDescr : public base_descriptor {
+  struct PopDescr : public base_descriptor<T> {
     vector<T>* vec;
     std::size_t pos;
     std::atomic<PopSubDescr<T>*> child;
@@ -107,14 +109,18 @@ namespace waitfree {
       return this->child.load() !=
              reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed);
     }
+
+    T* value(void) const override {
+      return reinterpret_cast<T*>(NotValue);
+    }
   };
 
   template <typename T>
-  struct PopSubDescr : public base_descriptor {
+  struct PopSubDescr : public base_descriptor<T> {
     PopDescr<T>* parent;
-    T* value;
+    T* val;
 
-    PopSubDescr(PopDescr<T>* parent, T* value) : parent(parent), value(value) {
+    PopSubDescr(PopDescr<T>* parent, T* val) : parent(parent), val(val) {
     }
 
     DescriptorType type(void) const override {
@@ -129,10 +135,14 @@ namespace waitfree {
         helper_cas(spot, this->parent->vec->pack_descr(this),
                    reinterpret_cast<T*>(NotValue));
       } else {
-        helper_cas(spot, this->parent->vec->pack_descr(this), this->value);
+        helper_cas(spot, this->parent->vec->pack_descr(this), this->val);
       }
 
       return this->parent->child.load() == this;
+    }
+
+    T* value(void) const override {
+      return this->val;
     }
   };
 
@@ -156,14 +166,14 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct PushDescr : public base_descriptor {
+  struct PushDescr : public base_descriptor<T> {
     vector<T>* vec;
-    T* value;
+    T* val;
     std::size_t pos;
     std::atomic<DescriptorState> state;
 
-    PushDescr(vector<T>* vec, T* value, std::size_t pos)
-        : vec(vec), value(value), pos(pos), state(DescriptorState::Undecided) {
+    PushDescr(vector<T>* vec, T* val, std::size_t pos)
+        : vec(vec), val(val), pos(pos), state(DescriptorState::Undecided) {
     }
 
     DescriptorType type(void) const override {
@@ -200,13 +210,17 @@ namespace waitfree {
       }
 
       if (this->state.load() == DescriptorState::Passed) {
-        helper_cas(spot, reinterpret_cast<T*>(this), this->value);
+        helper_cas(spot, reinterpret_cast<T*>(this), this->val);
       } else {
         helper_cas(spot, reinterpret_cast<T*>(this),
                    reinterpret_cast<T*>(NotValue));
       }
 
       return this->state.load() == DescriptorState::Passed;
+    }
+
+    T* value(void) const override {
+      return this->val;
     }
   };
 
@@ -351,7 +365,7 @@ namespace waitfree {
           if (spot.compare_exchange_strong(expected, pack_descr(ph))) {
             auto res = ph->complete();
             if (res) {
-              auto value = ph->child.load()->value;
+              auto value = ph->child.load()->val;
               this->size -= 1;
               return std::make_pair(true, value);
             } else {
@@ -399,7 +413,7 @@ namespace waitfree {
             auto res = ph->complete();
             if (res) {
               this->size += 1;
-              return pos - 1; // hmmm ???
+              return pos;
             } else {
               --pos;
             }
@@ -419,9 +433,22 @@ namespace waitfree {
       return push_op->result;
     }
 
+    std::pair<bool, T*> at(std::size_t pos) {
+      if (pos <= this->storage.load()->capacity) {
+        auto value = this->getSpot(pos).load();
+        if (this->is_descr(value)) {
+          value = this->unpack_descr(value)->value();
+        }
+        if (value != reinterpret_cast<T*>(NotValue)) {
+          return std::make_pair(true, value);
+        }
+      }
+      return std::make_pair(false, nullptr);
+    }
+
     // helpers
 
-    T* pack_descr(base_descriptor* desc) {
+    T* pack_descr(base_descriptor<T>* desc) {
       std::size_t x = reinterpret_cast<std::size_t>(desc);
 
       if ((x & 0b11) != 0 || x == 0) {
@@ -431,10 +458,10 @@ namespace waitfree {
       return reinterpret_cast<T*>(x | BitMarkings::IsDescriptor);
     }
 
-    base_descriptor* unpack_descr(T* desc) {
+    base_descriptor<T>* unpack_descr(T* desc) {
       std::size_t a = 0b11;
       std::size_t b = reinterpret_cast<std::size_t>(desc);
-      return reinterpret_cast<base_descriptor*>(b & ~a);
+      return reinterpret_cast<base_descriptor<T>*>(b & ~a);
     }
 
     // returns true IFF desc is bit-marked as a descriptor AND
@@ -451,6 +478,7 @@ namespace waitfree {
     }
 
     void announceOp(base_op* op) {
+      // dafddafdf(); // TODO (c650) -- this!!
     }
 
     std::atomic<T*>& getSpot(std::size_t pos) {

@@ -10,7 +10,8 @@ int main(void) {
   }
 
   for (int i = 0; i < 10; ++i) {
-    std::cout << *v.wf_popback().second << '\n';
+    // std::cout << *v.wf_popback().second << '\n';
+    std::cout << *v.at(i).second << "\n";
   }
 
   return 0;
