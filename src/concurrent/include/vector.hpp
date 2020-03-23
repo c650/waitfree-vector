@@ -15,7 +15,7 @@ namespace waitfree {
   // enum types
   enum DescriptorType { PUSH_DESCR, POP_DESCR, POP_SUB_DESCR };
   enum DescriptorState { Undecided, Failed, Passed };
-  enum OpType { POP_OP, PUSH_OP };
+  enum OpType { POP_OP, PUSH_OP, WRITE_OP };
 
   // IsDescriptor when non-nul | 0b01
   // NotValue when null | 0b00
@@ -243,6 +243,29 @@ namespace waitfree {
     }
   };
 
+  template <typename T>
+  struct WriteOp : public base_op {
+    vector<T>* vec;
+    std::size_t pos;
+    T* old;
+    T* noo;
+
+    std::pair<bool, T*> result;
+
+    WriteOp(vector<T>* vec, std::size_t pos, T* old, T* noo)
+        : vec(vec), pos(pos), old(old), noo(noo) {
+    }
+
+    OpType type(void) const override {
+      return OpType::WRITE_OP;
+    }
+
+    bool complete(void) override {
+      // fadffdafdfdfdfad(); // TODO(c650) -- this
+      return false;
+    }
+  };
+
   struct DescriptorSet {};
 
   template <typename T>
@@ -434,7 +457,7 @@ namespace waitfree {
     }
 
     std::pair<bool, T*> at(std::size_t pos) {
-      if (pos <= this->storage.load()->capacity) {
+      if (pos < this->size.load()) { // should be this, not whats in paper
         auto value = this->getSpot(pos).load();
         if (this->is_descr(value)) {
           value = this->unpack_descr(value)->value();
@@ -444,6 +467,32 @@ namespace waitfree {
         }
       }
       return std::make_pair(false, nullptr);
+    }
+
+    std::pair<bool, T*> cwrite(std::size_t pos, T* old, T* noo) {
+      if (pos >= this->size.load()) {
+        return std::make_pair(false, nullptr);
+      }
+
+      std::atomic<T*>& spot = this->getSpot(pos);
+      for (int failures = 0; failures < LIMIT; ++failures) {
+        auto value = spot.load();
+        if (this->is_descr(value)) {
+          this->unpack_descr(value)->complete();
+        } else if (value == old) {
+          if (helper_cas(spot, value, noo)) {
+            return std::make_pair(true, old);
+          } else {
+            return std::make_pair(false, value);
+          }
+        }
+      }
+
+      auto wo = new WriteOp<T>(this, pos, old, noo);
+
+      announceOp(wo);
+
+      return wo->result;
     }
 
     // helpers
