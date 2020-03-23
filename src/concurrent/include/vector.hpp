@@ -369,6 +369,9 @@ namespace waitfree {
 
     vector(std::size_t capacity)
         : storage(new Contiguous<T>(this, nullptr, capacity)), size(0) {
+      static_assert(sizeof(T) >= 4,
+                    "underlying type must be at least 4 bytes so that last 2 "
+                    "bits of address are available");
     }
 
     // returns whether successful and if successful returns ptr to element
