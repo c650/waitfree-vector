@@ -6,7 +6,7 @@
 
 namespace waitfree {
 
-  const int LIMIT = 6;
+  const int LIMIT = 100000;
 
   // vector type declaration
   template <typename T>
@@ -302,13 +302,13 @@ namespace waitfree {
           new Contiguous(this->vec, this, this->capacity * 2 + 1);
 
       auto expected = this;
-      if (this->vec->storage.compare_exchange_strong(expected, vnew)) {
+      if (this->vec->_storage.compare_exchange_strong(expected, vnew)) {
         for (std::size_t i = 0; i < this->capacity; ++i) {
           vnew->copyValue(i);
         }
       }
 
-      return this->vec->storage.load();
+      return this->vec->_storage.load();
     }
 
     void copyValue(const std::size_t pos) {
@@ -355,8 +355,8 @@ namespace waitfree {
 
   template <typename T>
   struct vector {
-    std::atomic<Contiguous<T>*> storage;
-    std::atomic<std::size_t> size;
+    std::atomic<Contiguous<T>*> _storage;
+    std::atomic<std::size_t> _size;
 
     // For maintaining efficient number of descriptors.
     // Each thread gets 2 of each descriptor type per
@@ -368,7 +368,7 @@ namespace waitfree {
     }
 
     vector(std::size_t capacity)
-        : storage(new Contiguous<T>(this, nullptr, capacity)), size(0) {
+        : _storage(new Contiguous<T>(this, nullptr, capacity)), _size(0) {
       static_assert(sizeof(T) >= 4,
                     "underlying type must be at least 4 bytes so that last 2 "
                     "bits of address are available");
@@ -378,13 +378,13 @@ namespace waitfree {
     std::pair<bool, T*> wf_popback(void) {
       help_if_needed();
 
-      auto pos = this->size.load();
+      auto pos = this->_size.load();
       for (int failures = 0; failures <= LIMIT; ++failures) {
         if (pos == 0) {
           return std::make_pair(false, nullptr);
         }
 
-        std::atomic<T*>& spot = this->storage.load()->getSpot(pos);
+        std::atomic<T*>& spot = this->_storage.load()->getSpot(pos);
         T* expected = spot.load();
         if (expected == reinterpret_cast<T*>(NotValue)) {
           auto ph = new PopDescr<T>(this, pos);
@@ -392,7 +392,7 @@ namespace waitfree {
             auto res = ph->complete();
             if (res) {
               auto value = ph->child.load()->val;
-              this->size -= 1;
+              this->_size -= 1;
               return std::make_pair(true, value);
             } else {
               --pos;
@@ -419,14 +419,14 @@ namespace waitfree {
         throw std::runtime_error("cannot push_back nullptr!!");
       }
 
-      auto pos = this->size.load();
+      auto pos = this->_size.load();
       for (int failures = 0; failures <= LIMIT; ++failures) {
         std::atomic<T*>& spot = this->getSpot(pos);
         auto expected = spot.load();
         if (expected == reinterpret_cast<T*>(NotValue)) {
           if (pos == 0) {
             if (helper_cas(spot, expected, value)) {
-              this->size += 1;
+              this->_size += 1;
               return 0;
             } else {
               pos++;
@@ -438,7 +438,7 @@ namespace waitfree {
           if (helper_cas(spot, expected, reinterpret_cast<T*>(ph))) {
             auto res = ph->complete();
             if (res) {
-              this->size += 1;
+              this->_size += 1;
               return pos;
             } else {
               --pos;
@@ -460,7 +460,7 @@ namespace waitfree {
     }
 
     std::pair<bool, T*> at(std::size_t pos) {
-      if (pos < this->size.load()) { // should be this, not whats in paper
+      if (pos < this->_size.load()) { // should be this, not whats in paper
         auto value = this->getSpot(pos).load();
         if (this->is_descr(value)) {
           value = this->unpack_descr(value)->value();
@@ -473,7 +473,7 @@ namespace waitfree {
     }
 
     std::pair<bool, T*> cwrite(std::size_t pos, T* old, T* noo) {
-      if (pos >= this->size.load()) {
+      if (pos >= this->_size.load()) {
         return std::make_pair(false, nullptr);
       }
 
@@ -496,6 +496,10 @@ namespace waitfree {
       announceOp(wo);
 
       return wo->result;
+    }
+
+    std::size_t size(void) const {
+      return this->_size.load();
     }
 
     // helpers
@@ -534,7 +538,7 @@ namespace waitfree {
     }
 
     std::atomic<T*>& getSpot(std::size_t pos) {
-      return this->storage.load()->getSpot(pos);
+      return this->_storage.load()->getSpot(pos);
     }
   };
 }; // namespace waitfree

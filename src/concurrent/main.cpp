@@ -1,19 +1,34 @@
+#include <chrono>
 #include <iostream>
+#include <random>
+#include <thread>
+#include <vector>
 
 #include "include/vector.hpp"
 
-int main(void) {
-  waitfree::vector<int> v;
+waitfree::vector<int> vec;
 
-  for (int i = 0; i < 10; ++i) {
-    std::cout << v.wf_push_back(new int{69 + i}) << "\n";
+void go(int id) {
+  std::mt19937 bloop(
+      std::chrono::system_clock::now().time_since_epoch().count());
+  for (int i = 0; i < 100; ++i) {
+    vec.wf_push_back(new int{id * 100 + i});
+    std::this_thread::sleep_for(std::chrono::milliseconds(bloop() % 10));
+  }
+}
+
+int main(void) {
+  std::vector<std::thread> threads;
+  for (int i = 1; i <= 3; ++i) {
+    threads.push_back(std::thread(go, i));
   }
 
-  v.cwrite(2, v.at(2).second, new int{666});
+  for (auto& t : threads) {
+    t.join();
+  }
 
-  for (int i = 0; i < 10; ++i) {
-    // std::cout << *v.wf_popback().second << '\n';
-    std::cout << *v.at(i).second << "\n";
+  for (std::size_t i = 0; i < vec.size(); ++i) {
+    std::cout << vec.at(i).second[0] << '\n';
   }
 
   return 0;
