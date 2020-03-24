@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <utility>
 
 namespace waitfree {
@@ -13,9 +14,16 @@ namespace waitfree {
   struct vector;
 
   // enum types
-  enum DescriptorType { PUSH_DESCR, POP_DESCR, POP_SUB_DESCR };
   enum DescriptorState { Undecided, Failed, Passed };
-  enum OpType { POP_OP, PUSH_OP, WRITE_OP };
+  enum DescriptorOpType {
+    PUSH_DESCR,
+    POP_DESCR,
+    POP_SUB_DESCR,
+    POP_OP,
+    PUSH_OP,
+    WRITE_OP,
+    __MAX_DESCRIPTOR_OP_TYPE__
+  };
 
   // IsDescriptor when non-nul | 0b01
   // NotValue when null | 0b00
@@ -35,15 +43,12 @@ namespace waitfree {
 
   // virtual types
   template <typename T>
-  struct base_descriptor {
-    virtual DescriptorType type(void) const = 0;
+  struct BaseDescriptor {
+    virtual DescriptorOpType type(void) const = 0;
     virtual bool complete(void) = 0;
-    virtual T* value(void) const = 0;
-  };
-
-  struct base_op {
-    virtual OpType type(void) const = 0;
-    virtual bool complete(void) = 0;
+    virtual T* value(void) const {
+      return nullptr;
+    }
   };
 
   // type declarations
@@ -53,12 +58,9 @@ namespace waitfree {
   template <typename T>
   struct PopSubDescr;
 
-  template <typename T>
-  struct PopOp;
-
   // descriptor implementations
   template <typename T>
-  struct PopDescr : public base_descriptor<T> {
+  struct PopDescr : public BaseDescriptor<T> {
     vector<T>* vec;
     std::size_t pos;
     std::atomic<PopSubDescr<T>*> child;
@@ -67,8 +69,8 @@ namespace waitfree {
         : vec(vec), pos(pos), child(nullptr) {
     }
 
-    DescriptorType type(void) const override {
-      return DescriptorType::POP_DESCR;
+    DescriptorOpType type(void) const override {
+      return DescriptorOpType::POP_DESCR;
     }
 
     bool complete(void) override {
@@ -116,15 +118,15 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct PopSubDescr : public base_descriptor<T> {
+  struct PopSubDescr : public BaseDescriptor<T> {
     PopDescr<T>* parent;
     T* val;
 
     PopSubDescr(PopDescr<T>* parent, T* val) : parent(parent), val(val) {
     }
 
-    DescriptorType type(void) const override {
-      return DescriptorType::POP_SUB_DESCR;
+    DescriptorOpType type(void) const override {
+      return DescriptorOpType::POP_SUB_DESCR;
     }
 
     bool complete(void) override {
@@ -147,7 +149,7 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct PopOp : public base_op {
+  struct PopOp : public BaseDescriptor<T> {
     vector<T>* vec;
 
     std::pair<bool, T*> result;
@@ -155,8 +157,8 @@ namespace waitfree {
     PopOp(vector<T>* vec) : vec(vec) {
     }
 
-    OpType type(void) const override {
-      return OpType::POP_OP;
+    DescriptorOpType type(void) const override {
+      return DescriptorOpType::POP_OP;
     }
 
     bool complete(void) override {
@@ -166,7 +168,7 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct PushDescr : public base_descriptor<T> {
+  struct PushDescr : public BaseDescriptor<T> {
     vector<T>* vec;
     T* val;
     std::size_t pos;
@@ -176,8 +178,8 @@ namespace waitfree {
         : vec(vec), val(val), pos(pos), state(DescriptorState::Undecided) {
     }
 
-    DescriptorType type(void) const override {
-      return DescriptorType::PUSH_DESCR;
+    DescriptorOpType type(void) const override {
+      return DescriptorOpType::PUSH_DESCR;
     }
 
     bool complete(void) override {
@@ -225,7 +227,7 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct PushOp : public base_op {
+  struct PushOp : public BaseDescriptor<T> {
     vector<T>* vec;
 
     std::size_t result;
@@ -233,8 +235,8 @@ namespace waitfree {
     PushOp(vector<T>* vec) : vec(vec) {
     }
 
-    OpType type(void) const override {
-      return OpType::PUSH_OP;
+    DescriptorOpType type(void) const override {
+      return DescriptorOpType::PUSH_OP;
     }
 
     bool complete(void) override {
@@ -244,7 +246,7 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct WriteOp : public base_op {
+  struct WriteOp : public BaseDescriptor<T> {
     vector<T>* vec;
     std::size_t pos;
     T* old;
@@ -256,8 +258,8 @@ namespace waitfree {
         : vec(vec), pos(pos), old(old), noo(noo) {
     }
 
-    OpType type(void) const override {
-      return OpType::WRITE_OP;
+    DescriptorOpType type(void) const override {
+      return DescriptorOpType::WRITE_OP;
     }
 
     bool complete(void) override {
@@ -266,7 +268,48 @@ namespace waitfree {
     }
   };
 
-  struct DescriptorSet {};
+  template <typename T>
+  struct DescriptorSet {
+    template <typename DescriptorOrOp>
+    struct Handle {
+      std::size_t last_used;
+      std::array<std::shared_ptr<DescriptorOrOp>, 2> arr;
+
+      Handle(void) : last_used(0) {
+        for (auto& e : arr) {
+          e = std::shared_ptr<DescriptorOrOp>{new DescriptorOrOp{}};
+        }
+      }
+
+      std::shared_ptr<DescriptorOrOp> get(void) {
+        return arr[last_used ^= 1];
+      }
+    };
+
+    std::array<std::shared_ptr<Handle<BaseDescriptor<T>>>,
+               DescriptorOpType::__MAX_DESCRIPTOR_OP_TYPE__>
+        descops;
+
+    DescriptorSet(void) {
+      descops[DescriptorOpType::POP_DESCR] =
+          decltype(descops[0]){new Handle<PopDescr<T>>{}};
+
+      descops[DescriptorOpType::POP_OP] =
+          decltype(descops[0]){new Handle<PopOp<T>>{}};
+
+      descops[DescriptorOpType::POP_SUB_DESCR] =
+          decltype(descops[0]){new Handle<PopSubDescr<T>>{}};
+
+      descops[DescriptorOpType::PUSH_DESCR] =
+          decltype(descops[0]){new Handle<PushDescr<T>>{}};
+
+      descops[DescriptorOpType::PUSH_OP] =
+          decltype(descops[0]){new Handle<PushOp<T>>{}};
+
+      descops[DescriptorOpType::WRITE_OP] =
+          decltype(descops[0]){new Handle<WriteOp<T>>{}};
+    }
+  };
 
   template <typename T>
   struct InternalStorage {};
@@ -504,7 +547,7 @@ namespace waitfree {
 
     // helpers
 
-    T* pack_descr(base_descriptor<T>* desc) {
+    T* pack_descr(BaseDescriptor<T>* desc) {
       std::size_t x = reinterpret_cast<std::size_t>(desc);
 
       if ((x & 0b11) != 0 || x == 0) {
@@ -514,10 +557,10 @@ namespace waitfree {
       return reinterpret_cast<T*>(x | BitMarkings::IsDescriptor);
     }
 
-    base_descriptor<T>* unpack_descr(T* desc) {
+    BaseDescriptor<T>* unpack_descr(T* desc) {
       std::size_t a = 0b11;
       std::size_t b = reinterpret_cast<std::size_t>(desc);
-      return reinterpret_cast<base_descriptor<T>*>(b & ~a);
+      return reinterpret_cast<BaseDescriptor<T>*>(b & ~a);
     }
 
     // returns true IFF desc is bit-marked as a descriptor AND
@@ -533,7 +576,7 @@ namespace waitfree {
       // fadfdfdfad(); // TODO (c650) -- this.
     }
 
-    void announceOp(base_op* op) {
+    void announceOp(BaseDescriptor<T>* op) {
       // dafddafdf(); // TODO (c650) -- this!!
     }
 
