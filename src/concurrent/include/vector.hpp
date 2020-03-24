@@ -15,15 +15,6 @@ namespace waitfree {
 
   // enum types
   enum DescriptorState { Undecided, Failed, Passed };
-  enum DescriptorOpType {
-    PUSH_DESCR,
-    POP_DESCR,
-    POP_SUB_DESCR,
-    POP_OP,
-    PUSH_OP,
-    WRITE_OP,
-    __MAX_DESCRIPTOR_OP_TYPE__
-  };
 
   // IsDescriptor when non-nul | 0b01
   // NotValue when null | 0b00
@@ -43,11 +34,28 @@ namespace waitfree {
 
   // virtual types
   template <typename T>
-  struct BaseDescriptor {
-    virtual DescriptorOpType type(void) const = 0;
+  struct BaseValueOrDescriptor {
+    const bool is_descr;
+    BaseValueOrDescriptor(bool is_descr) : is_descr(is_descr) {
+    }
+  };
+
+  template <typename T>
+  struct BaseDescriptor : private BaseValueOrDescriptor<T> {
     virtual bool complete(void) = 0;
     virtual T* value(void) const {
       return nullptr;
+    }
+
+    BaseDescriptor(void) : BaseValueOrDescriptor<T>(true) {
+    }
+  };
+
+  template <typename T>
+  struct BaseValue : private BaseValueOrDescriptor<T> {
+    const T value;
+
+    BaseValue(T value) : BaseValueOrDescriptor<T>(false) {
     }
   };
 
@@ -269,66 +277,27 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct DescriptorSet {
-    template <typename DescriptorOrOp>
-    struct Handle {
-      std::size_t last_used;
-      std::array<std::shared_ptr<DescriptorOrOp>, 2> arr;
-
-      Handle(void) : last_used(0) {
-        for (auto& e : arr) {
-          e = std::shared_ptr<DescriptorOrOp>{new DescriptorOrOp{}};
-        }
-      }
-
-      std::shared_ptr<DescriptorOrOp> get(void) {
-        return arr[last_used ^= 1];
-      }
-    };
-
-    std::array<std::shared_ptr<Handle<BaseDescriptor<T>>>,
-               DescriptorOpType::__MAX_DESCRIPTOR_OP_TYPE__>
-        descops;
-
-    DescriptorSet(void) {
-      descops[DescriptorOpType::POP_DESCR] =
-          decltype(descops[0]){new Handle<PopDescr<T>>{}};
-
-      descops[DescriptorOpType::POP_OP] =
-          decltype(descops[0]){new Handle<PopOp<T>>{}};
-
-      descops[DescriptorOpType::POP_SUB_DESCR] =
-          decltype(descops[0]){new Handle<PopSubDescr<T>>{}};
-
-      descops[DescriptorOpType::PUSH_DESCR] =
-          decltype(descops[0]){new Handle<PushDescr<T>>{}};
-
-      descops[DescriptorOpType::PUSH_OP] =
-          decltype(descops[0]){new Handle<PushOp<T>>{}};
-
-      descops[DescriptorOpType::WRITE_OP] =
-          decltype(descops[0]){new Handle<WriteOp<T>>{}};
-    }
-  };
-
-  template <typename T>
   struct InternalStorage {};
 
   template <typename T>
   struct Contiguous : private InternalStorage<T> {
     vector<T>* vec;
-    Contiguous* old;
+    Contiguous<T>* old;
     const std::size_t capacity;
 
-    std::atomic<T*>* array;
+    typedef std::atomic<std::shared_ptr<BaseValueOrDescriptor<T>>>
+        ArrayElementType;
+
+    ArrayElementType* array;
 
     Contiguous(vector<T>* vec, Contiguous* old, std::size_t capacity)
         : vec(vec),
           old(old),
           capacity(capacity),
-          array(new std::atomic<T*>[capacity]) {
+          array(new ArrayElementType[capacity]) {
       // reinterpret_cast is the C++ analog of summoning Satan
       const std::size_t prefix = old == nullptr ? 0 : old->capacity;
+
       std::fill(this->array, this->array + prefix,
                 reinterpret_cast<T*>(NotCopied));
       std::fill(this->array + prefix, this->array + this->capacity,
