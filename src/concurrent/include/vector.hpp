@@ -376,7 +376,7 @@ namespace waitfree {
 
     // returns whether successful and if successful returns ptr to element
     std::pair<bool, T*> wf_popback(void) {
-      help_if_needed();
+      this->help_if_needed();
 
       auto pos = this->_size.load();
       for (int failures = 0; failures <= LIMIT; ++failures) {
@@ -413,7 +413,7 @@ namespace waitfree {
     }
 
     std::size_t wf_push_back(T* const value) {
-      help_if_needed();
+      this->help_if_needed();
 
       if (value == nullptr) {
         throw std::runtime_error("cannot push_back nullptr!!");
@@ -460,6 +460,8 @@ namespace waitfree {
     }
 
     std::pair<bool, T*> at(std::size_t pos) {
+      this->help_if_needed();
+
       if (pos < this->_size.load()) { // should be this, not whats in paper
         auto value = this->getSpot(pos).load();
         if (this->is_descr(value)) {
@@ -473,6 +475,8 @@ namespace waitfree {
     }
 
     std::pair<bool, T*> cwrite(std::size_t pos, T* old, T* noo) {
+      this->help_if_needed();
+
       if (pos >= this->_size.load()) {
         return std::make_pair(false, nullptr);
       }
