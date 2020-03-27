@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <map>
 #include <utility>
@@ -7,13 +8,15 @@
 namespace waitfree {
 
   const int LIMIT = 100000;
+  const int NO_LIMIT = std::numeric_limits<int>::max();
+  const std::size_t NO_TID = std::numeric_limits<std::size_t>::max();
 
   // vector type declaration
   template <typename T>
   struct vector;
 
   // enum types
-  enum DescriptorType { PUSH_DESCR, POP_DESCR, POP_SUB_DESCR };
+  enum DescriptorType { PUSH_DESCR, POP_DESCR, POP_SUB_DESCR, WRITE_OP_DESCR };
   enum DescriptorState { Undecided, Failed, Passed };
   enum OpType { POP_OP, PUSH_OP, WRITE_OP };
 
@@ -161,7 +164,6 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      fadfdfad(); // TODO(c650) -- this
       return false;
     }
   };
@@ -240,14 +242,41 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      fadffdafdfdfdfad(); // TODO(c650) -- this
       return false;
     }
   };
 
   template <typename T>
   struct WriteOp : public base_op {
-    vector<T>* vec;
+    struct WriteOpDesc : public base_descriptor<T> {
+      WriteOp* const _owner;
+      vector<T>* const _vec;
+      T* const _val;
+
+      WriteOpDesc(WriteOp* const owner, vector<T>* const vec, T* const val)
+          : _owner(owner), _vec(vec), _val(val) {
+      }
+
+      DescriptorType type(void) const override {
+        return DescriptorType::WRITE_OP_DESCR;
+      }
+
+      bool complete(void) override {
+        helper_cas(this->_owner->done, false, true);
+
+        auto& ref = this->_vec->getSpot(this->_owner->pos);
+
+        helper_cas(ref, this->_vec->pack_descr(this), this->_owner->noo);
+
+        return true;
+      }
+
+      T* value(void) const override {
+        return this->_val;
+      }
+    };
+
+    vector<T>* _vec;
     std::size_t pos;
     T* old;
     T* noo;
@@ -255,7 +284,7 @@ namespace waitfree {
     std::pair<bool, T*> result;
 
     WriteOp(vector<T>* vec, std::size_t pos, T* old, T* noo)
-        : vec(vec), pos(pos), old(old), noo(noo) {
+        : _vec(vec), pos(pos), old(old), noo(noo) {
     }
 
     OpType type(void) const override {
@@ -263,7 +292,33 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      fadffdafdfdfdfad(); // TODO(c650) -- this
+      for (;;) {
+        if (this->done.load()) {
+          return true;
+        }
+
+        auto& ref = this->_vec->getSpot(this->pos);
+
+        auto val = ref.load();
+
+        if (_vec->is_descr(val)) {
+          _vec->unpack_descr(val)->complete();
+          continue;
+        } else if (val == reinterpret_cast<T*>(NotValue)) {
+          this->result = std::make_pair(false, nullptr);
+          return true;
+        } else {
+          if (val != this->old && !this->done.load()) {
+            this->result = std::make_pair(false, val);
+            return true;
+          }
+          WriteOpDesc* d = new WriteOpDesc(this, _vec, this->noo);
+          if (helper_cas(ref, val, this->_vec->pack_descr(d))) {
+            d->complete();
+            return true;
+          }
+        }
+      }
       return false;
     }
   };
@@ -415,6 +470,8 @@ namespace waitfree {
         }
       }
 
+      assert(tid != NO_TID);
+
       PopOp<T>* __po;
 
       this->announceOp(tid,
@@ -463,6 +520,8 @@ namespace waitfree {
         }
       }
 
+      assert(tid != NO_TID);
+
       PushOp<T>* __po;
 
       announceOp(tid,
@@ -495,7 +554,7 @@ namespace waitfree {
       }
 
       std::atomic<T*>& spot = this->getSpot(pos);
-      for (int failures = 0; failures < LIMIT; ++failures) {
+      for (int failures = 0; failures <= LIMIT; ++failures) {
         auto value = spot.load();
         if (this->is_descr(value)) {
           this->unpack_descr(value)->complete();
@@ -507,6 +566,8 @@ namespace waitfree {
           }
         }
       }
+
+      assert(tid != NO_TID);
 
       WriteOp<T>* __wo;
 
@@ -547,14 +608,20 @@ namespace waitfree {
              (x != BitMarkings::IsDescriptor);
     }
 
-    void help(const std::size_t tid) {
-      auto t_op =
-          std::atomic_load(&(this->_thread_ops[this->_thread_to_help[tid]]));
-      if (t_op != nullptr) {
+    void help(const std::size_t my_tid, const std::size_t tid) {
+      for (;;) {
+        auto t_op =
+            std::atomic_load(&(this->_thread_ops[this->_thread_to_help[tid]]));
+
+        if (t_op == nullptr) {
+          return;
+        }
+
         t_op->complete();
-        decltype(t_op) np{nullptr}, np2{np};
+
         std::atomic_compare_exchange_strong(
-            &(this->_thread_ops[this->_thread_to_help[tid]]), &np, np2);
+            &(this->_thread_ops[this->_thread_to_help[tid]]), &t_op,
+            decltype(t_op){nullptr});
       }
     }
 
@@ -566,7 +633,7 @@ namespace waitfree {
       this->_thread_to_help[tid] =
           (this->_thread_to_help[tid] + 1) % this->_num_threads;
 
-      help(this->_thread_to_help[tid]);
+      help(tid, this->_thread_to_help[tid]);
     }
 
     void announceOp(const std::size_t tid, const std::shared_ptr<base_op>& op) {
@@ -576,14 +643,13 @@ namespace waitfree {
 
       auto cur = std::atomic_load(&(this->_thread_ops[tid]));
 
-      if (cur != nullptr) {
-        throw std::runtime_error{
-            "thread cannot announce op before its prev op(s) finish"};
-      }
+      // if (cur != nullptr) {
+      //   throw std::runtime_error{"tid has op already"};
+      // }
 
       std::atomic_compare_exchange_strong(&(this->_thread_ops[tid]), &cur, op);
 
-      help(tid);
+      help(tid, tid);
     }
 
     std::atomic<T*>& getSpot(std::size_t pos) {
