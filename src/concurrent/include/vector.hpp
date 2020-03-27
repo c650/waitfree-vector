@@ -42,6 +42,7 @@ namespace waitfree {
   };
 
   struct base_op {
+    std::atomic_bool done;
     virtual OpType type(void) const = 0;
     virtual bool complete(void) = 0;
   };
@@ -160,7 +161,7 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      // fadfdfad(); // TODO(c650) -- this
+      fadfdfad(); // TODO(c650) -- this
       return false;
     }
   };
@@ -227,10 +228,11 @@ namespace waitfree {
   template <typename T>
   struct PushOp : public base_op {
     vector<T>* vec;
+    T* const value;
 
     std::size_t result;
 
-    PushOp(vector<T>* vec) : vec(vec) {
+    PushOp(vector<T>* vec, T* const value) : vec(vec), value(value) {
     }
 
     OpType type(void) const override {
@@ -238,7 +240,7 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      // fadffdafdfdfdfad(); // TODO(c650) -- this
+      fadffdafdfdfdfad(); // TODO(c650) -- this
       return false;
     }
   };
@@ -261,7 +263,7 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      // fadffdafdfdfdfad(); // TODO(c650) -- this
+      fadffdafdfdfdfad(); // TODO(c650) -- this
       return false;
     }
   };
@@ -355,6 +357,10 @@ namespace waitfree {
 
   template <typename T>
   struct vector {
+    const std::size_t _num_threads;
+    std::vector<std::shared_ptr<base_op>> _thread_ops;
+    std::vector<std::size_t> _thread_to_help;
+
     std::atomic<Contiguous<T>*> _storage;
     std::atomic<std::size_t> _size;
 
@@ -364,19 +370,23 @@ namespace waitfree {
     // https://stackoverflow.com/a/41801400
     // static thread_local std::map<vector<T>*, DescriptorSet> descs;
 
-    vector(void) : vector(0) {
+    vector(std::size_t num_threads) : vector(num_threads, 0) {
     }
 
-    vector(std::size_t capacity)
-        : _storage(new Contiguous<T>(this, nullptr, capacity)), _size(0) {
+    vector(std::size_t num_threads, std::size_t capacity)
+        : _num_threads(num_threads),
+          _thread_ops(_num_threads),
+          _thread_to_help(_num_threads),
+          _storage(new Contiguous<T>(this, nullptr, capacity)),
+          _size(0) {
       static_assert(sizeof(T) >= 4,
                     "underlying type must be at least 4 bytes so that last 2 "
                     "bits of address are available");
     }
 
     // returns whether successful and if successful returns ptr to element
-    std::pair<bool, T*> wf_popback(void) {
-      this->help_if_needed();
+    std::pair<bool, T*> wf_popback(const std::size_t tid) {
+      this->help_if_needed(tid);
 
       auto pos = this->_size.load();
       for (int failures = 0; failures <= LIMIT; ++failures) {
@@ -405,15 +415,16 @@ namespace waitfree {
         }
       }
 
-      auto pop_op = new PopOp<T>(this);
+      PopOp<T>* __po;
 
-      announceOp(pop_op);
+      this->announceOp(tid,
+                       std::shared_ptr<base_op>{__po = new PopOp<T>(this)});
 
-      return pop_op->result;
+      return __po->result;
     }
 
-    std::size_t wf_push_back(T* const value) {
-      this->help_if_needed();
+    std::size_t wf_push_back(const std::size_t tid, T* const value) {
+      this->help_if_needed(tid);
 
       if (value == nullptr) {
         throw std::runtime_error("cannot push_back nullptr!!");
@@ -452,15 +463,16 @@ namespace waitfree {
         }
       }
 
-      auto push_op = new PushOp<T>(this);
+      PushOp<T>* __po;
 
-      announceOp(push_op);
+      announceOp(tid,
+                 std::shared_ptr<base_op>{__po = new PushOp<T>(this, value)});
 
-      return push_op->result;
+      return __po->result;
     }
 
-    std::pair<bool, T*> at(std::size_t pos) {
-      this->help_if_needed();
+    std::pair<bool, T*> at(const std::size_t tid, std::size_t pos) {
+      this->help_if_needed(tid);
 
       if (pos < this->_size.load()) { // should be this, not whats in paper
         auto value = this->getSpot(pos).load();
@@ -474,8 +486,9 @@ namespace waitfree {
       return std::make_pair(false, nullptr);
     }
 
-    std::pair<bool, T*> cwrite(std::size_t pos, T* old, T* noo) {
-      this->help_if_needed();
+    std::pair<bool, T*> cwrite(const std::size_t tid, std::size_t pos, T* old,
+                               T* noo) {
+      this->help_if_needed(tid);
 
       if (pos >= this->_size.load()) {
         return std::make_pair(false, nullptr);
@@ -495,11 +508,12 @@ namespace waitfree {
         }
       }
 
-      auto wo = new WriteOp<T>(this, pos, old, noo);
+      WriteOp<T>* __wo;
 
-      announceOp(wo);
+      announceOp(tid, std::shared_ptr<base_op>{
+                          __wo = new WriteOp<T>(this, pos, old, noo)});
 
-      return wo->result;
+      return __wo->result;
     }
 
     std::size_t size(void) const {
@@ -533,12 +547,43 @@ namespace waitfree {
              (x != BitMarkings::IsDescriptor);
     }
 
-    void help_if_needed(void) {
-      // fadfdfdfad(); // TODO (c650) -- this.
+    void help(const std::size_t tid) {
+      auto t_op =
+          std::atomic_load(&(this->_thread_ops[this->_thread_to_help[tid]]));
+      if (t_op != nullptr) {
+        t_op->complete();
+        decltype(t_op) np{nullptr}, np2{np};
+        std::atomic_compare_exchange_strong(
+            &(this->_thread_ops[this->_thread_to_help[tid]]), &np, np2);
+      }
     }
 
-    void announceOp(base_op* op) {
-      // dafddafdf(); // TODO (c650) -- this!!
+    void help_if_needed(const std::size_t tid) {
+      if (tid >= this->_num_threads) {
+        throw std::runtime_error{"tid out of bounds"};
+      }
+
+      this->_thread_to_help[tid] =
+          (this->_thread_to_help[tid] + 1) % this->_num_threads;
+
+      help(this->_thread_to_help[tid]);
+    }
+
+    void announceOp(const std::size_t tid, const std::shared_ptr<base_op>& op) {
+      if (tid >= this->_num_threads) {
+        throw std::runtime_error{"tid out of bounds"};
+      }
+
+      auto cur = std::atomic_load(&(this->_thread_ops[tid]));
+
+      if (cur != nullptr) {
+        throw std::runtime_error{
+            "thread cannot announce op before its prev op(s) finish"};
+      }
+
+      std::atomic_compare_exchange_strong(&(this->_thread_ops[tid]), &cur, op);
+
+      help(tid);
     }
 
     std::atomic<T*>& getSpot(std::size_t pos) {
