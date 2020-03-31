@@ -175,8 +175,14 @@ namespace waitfree {
     std::size_t pos;
     std::atomic<DescriptorState> state;
 
+    base_op* owner;
+
     PushDescr(vector<T>* vec, T* val, std::size_t pos)
-        : vec(vec), val(val), pos(pos), state(DescriptorState::Undecided) {
+        : vec(vec),
+          val(val),
+          pos(pos),
+          state(DescriptorState::Undecided),
+          owner(nullptr) {
     }
 
     DescriptorType type(void) const override {
@@ -185,6 +191,19 @@ namespace waitfree {
 
     bool complete(void) override {
       std::atomic<T*>& spot = this->vec->getSpot(this->pos);
+
+      if (this->pos == 0) {
+        helper_cas(this->state, DescriptorState::Undecided,
+                   DescriptorState::Passed);
+        if (this->owner) {
+          helper_cas(this->owner->done, false, true);
+        }
+
+        helper_cas(spot, this->vec->pack_descr(this), this->val);
+
+        return true;
+      }
+
       decltype(spot) spot2 = this->vec->getSpot(this->pos - 1);
 
       auto current = spot2.load();
@@ -213,9 +232,12 @@ namespace waitfree {
       }
 
       if (this->state.load() == DescriptorState::Passed) {
-        helper_cas(spot, reinterpret_cast<T*>(this), this->val);
+        if (this->owner) {
+          helper_cas(this->owner->done, false, true);
+        }
+        helper_cas(spot, this->vec->pack_descr(this), this->val);
       } else {
-        helper_cas(spot, reinterpret_cast<T*>(this),
+        helper_cas(spot, this->vec->pack_descr(this),
                    reinterpret_cast<T*>(NotValue));
       }
 
@@ -234,7 +256,10 @@ namespace waitfree {
 
     std::size_t result;
 
-    PushOp(vector<T>* vec, T* const value) : vec(vec), value(value) {
+    std::atomic_bool can_return;
+
+    PushOp(vector<T>* vec, T* const value)
+        : vec(vec), value(value), result(-1), can_return(false) {
     }
 
     OpType type(void) const override {
@@ -242,7 +267,62 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      return false;
+      // just like pushback
+
+      // do the pushback loop,
+      // but only while we aren't done
+
+      // but if we have to place a descriptor,
+      // we try placing descriptor, but make sure that
+      // some other thread hasnt yet
+
+      // have a thread CAS in a descriptor
+      // some PushOp::state will be Pending
+      // and then the threads try to CAS a descriptor
+      // the winner gets to update PushOp::state to DescriptorPlaced
+      // then all threads call descriptor's complete()
+      // if successful, we are done! (this->done |= complete())
+      // otherwise, repeat loop
+
+      auto pos = this->vec->_size.load();
+      while (!this->done.load()) {
+        std::atomic<T*>& spot = this->vec->getSpot(pos);
+        auto expected = spot.load();
+
+        if (this->vec->is_descr(expected)) {
+          this->vec->unpack_descr(expected)->complete();
+          continue;
+        }
+
+        if (expected != reinterpret_cast<T*>(NotValue)) {
+          ++pos;
+          continue;
+        }
+
+        PushDescr<T>* pd = new PushDescr<T>(this->vec, this->value, pos);
+        pd->owner = this;
+
+        if (helper_cas(spot, expected, this->vec->pack_descr(pd))) {
+          auto res = pd->complete();
+          if (res) {
+            result = pos;
+            this->vec->_size += 1;
+            this->done.store(true);
+            this->can_return.store(true);
+          } else {
+            if (pos == 0) {
+              ++pos;
+            } else {
+              --pos;
+            }
+          }
+        }
+      }
+
+      while (!this->can_return.load())
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+
+      return true;
     }
   };
 
@@ -314,6 +394,7 @@ namespace waitfree {
           }
           WriteOpDesc* d = new WriteOpDesc(this, _vec, this->noo);
           if (helper_cas(ref, val, this->_vec->pack_descr(d))) {
+            this->result = std::make_pair(true, val);
             d->complete();
             return true;
           }
@@ -503,7 +584,7 @@ namespace waitfree {
           }
 
           auto ph = new PushDescr<T>(this, value, pos);
-          if (helper_cas(spot, expected, reinterpret_cast<T*>(ph))) {
+          if (helper_cas(spot, expected, this->pack_descr(ph))) {
             auto res = ph->complete();
             if (res) {
               this->_size += 1;
@@ -609,20 +690,20 @@ namespace waitfree {
     }
 
     void help(const std::size_t my_tid, const std::size_t tid) {
-      for (;;) {
-        auto t_op =
-            std::atomic_load(&(this->_thread_ops[this->_thread_to_help[tid]]));
+      // for (;;) {
+      auto t_op =
+          std::atomic_load(&(this->_thread_ops[this->_thread_to_help[tid]]));
 
-        if (t_op == nullptr) {
-          return;
-        }
-
-        t_op->complete();
-
-        std::atomic_compare_exchange_strong(
-            &(this->_thread_ops[this->_thread_to_help[tid]]), &t_op,
-            decltype(t_op){nullptr});
+      if (t_op == nullptr) {
+        return;
       }
+
+      t_op->complete();
+
+      std::atomic_compare_exchange_strong(
+          &(this->_thread_ops[this->_thread_to_help[tid]]), &t_op,
+          decltype(t_op){nullptr});
+      // }
     }
 
     void help_if_needed(const std::size_t tid) {

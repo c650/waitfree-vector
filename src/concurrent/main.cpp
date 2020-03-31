@@ -11,11 +11,11 @@ void test_pushback(const int NUM_THREADS) {
   waitfree::vector<int> vec(NUM_THREADS);
 
   auto go = [&](int id) {
-    std::mt19937 bloop(
-        std::chrono::system_clock::now().time_since_epoch().count());
-    for (int i = 0; i < 3; ++i) {
+    // std::mt19937 bloop(
+    //     std::chrono::system_clock::now().time_since_epoch().count());
+    for (int i = 0; i < 30; ++i) {
       vec.wf_push_back(id, new int{(id + 1) * 100 + i});
-      std::this_thread::sleep_for(std::chrono::milliseconds(bloop() % 10));
+      // std::this_thread::sleep_for(std::chrono::milliseconds(bloop() % 10));
     }
   };
 
@@ -84,8 +84,8 @@ void test_cwrite(const int NUM_THREADS) {
 }
 
 int main(void) {
-  // test_pushback(16);
-  test_cwrite(16);
+  test_pushback(16);
+  // test_cwrite(16);
 
   return 0;
 }
