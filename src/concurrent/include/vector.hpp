@@ -389,12 +389,13 @@ namespace waitfree {
       }
 
       bool complete(void) override {
-        helper_cas(this->_owner->done, false, true);
-
         auto& ref = this->_vec->getSpot(this->_owner->pos);
 
-        helper_cas(ref, this->_vec->pack_descr(this), this->_owner->noo);
+        helper_cas(this->_owner->result,
+                   static_cast<std::pair<bool, T*>*>(nullptr),
+                   new std::pair<bool, T*>(true, this->_owner->old));
 
+        helper_cas(ref, this->_vec->pack_descr(this), this->_owner->noo);
         return true;
       }
 
@@ -419,11 +420,7 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      for (;;) {
-        if (this->done.load()) {
-          return true;
-        }
-
+      while (this->result.load() == nullptr) {
         auto& ref = this->_vec->getSpot(this->pos);
 
         auto val = ref.load();
@@ -431,22 +428,22 @@ namespace waitfree {
         if (_vec->is_descr(val)) {
           _vec->unpack_descr(val)->complete();
           continue;
-        } else if (val == reinterpret_cast<T*>(NotValue)) {
-          this->result.store(new std::pair<bool, T*>(false, nullptr));
+        }
+
+        if (val != this->old) {
+          helper_cas(this->result, static_cast<std::pair<bool, T*>*>(nullptr),
+                     new std::pair<bool, T*>(false, val));
           return true;
-        } else {
-          if (val != this->old && !this->done.load()) {
-            this->result.store(new std::pair<bool, T*>(false, val));
-            return true;
-          }
-          WriteOpDesc* d = new WriteOpDesc(this, _vec, this->noo);
-          if (helper_cas(ref, val, this->_vec->pack_descr(d))) {
-            this->result.store(new std::pair<bool, T*>(true, val));
-            d->complete();
-            return true;
-          }
+        }
+
+        WriteOpDesc* d = new WriteOpDesc(this, _vec, this->noo);
+
+        if (helper_cas(ref, val, this->_vec->pack_descr(d))) {
+          d->complete();
+          return true;
         }
       }
+
       return true;
     }
   };
