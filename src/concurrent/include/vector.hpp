@@ -630,6 +630,10 @@ namespace waitfree {
                                T* noo) {
       this->help_if_needed(tid);
 
+      if (noo == nullptr) {
+        return std::make_pair(false, nullptr);
+      }
+
       if (pos >= this->_size.load()) {
         return std::make_pair(false, nullptr);
       }
