@@ -21,7 +21,11 @@ void test_pushback(const int NUM_THREADS) {
 
   std::vector<std::thread> threads;
   for (int i = 1; i < NUM_THREADS; ++i) {
-    threads.push_back(std::thread(go, i));
+    try {
+      threads.push_back(std::thread{go, i});
+    } catch (...) {
+      std::cerr << "fail to make " << i << "\n";
+    }
   }
 
   for (auto& t : threads) {
@@ -31,6 +35,47 @@ void test_pushback(const int NUM_THREADS) {
   for (std::size_t i = 0; i < vec.size(); ++i) {
     std::cout << vec.at(0, i).second[0] << '\n';
   }
+}
+
+void test_popback(const int NUM_THREADS) {
+  const int LEN = 30;
+
+  std::cout << "TEST POPBACK " << NUM_THREADS << " threads\n";
+  waitfree::vector<int> vec(NUM_THREADS);
+
+  std::vector<int> good(NUM_THREADS);
+
+  auto go = [&](int id) {
+    for (int i = 0; i < LEN; ++i) {
+      good[id] += vec.wf_popback(id).first;
+    }
+  };
+
+  for (int i = 0; i < NUM_THREADS * LEN; ++i) {
+    vec.wf_push_back(0, new int{i});
+  }
+
+  std::vector<std::thread> threads;
+  for (int i = 1; i < NUM_THREADS; ++i) {
+    try {
+      threads.push_back(std::thread{go, i});
+    } catch (...) {
+      std::cerr << "fail to make " << i << "\n";
+    }
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  for (std::size_t i = 0; i < vec.size(); ++i) {
+    std::cout << vec.at(0, i).second[0] << '\n';
+  }
+
+  for (int i = 0; i < NUM_THREADS; ++i) {
+    std::cout << good[i] << " ";
+  }
+  std::cout << "\n";
 }
 
 void test_cwrite(const int NUM_THREADS) {
@@ -55,7 +100,11 @@ void test_cwrite(const int NUM_THREADS) {
 
   std::vector<std::thread> threads;
   for (int i = 1; i < NUM_THREADS; ++i) {
-    threads.push_back(std::thread{go, i});
+    try {
+      threads.push_back(std::thread{go, i});
+    } catch (...) {
+      std::cerr << "fail to make " << i << "\n";
+    }
   }
 
   for (auto& e : threads) {
@@ -84,8 +133,9 @@ void test_cwrite(const int NUM_THREADS) {
 }
 
 int main(void) {
-  test_pushback(16);
-  // test_cwrite(16);
+  // test_pushback(16);
+  // test_popback(16);
+  test_cwrite(16);
 
   return 0;
 }

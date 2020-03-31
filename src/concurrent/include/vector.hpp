@@ -7,7 +7,7 @@
 
 namespace waitfree {
 
-  const int LIMIT = 100000;
+  const int LIMIT = 1000;
   const int NO_LIMIT = std::numeric_limits<int>::max();
   const std::size_t NO_TID = std::numeric_limits<std::size_t>::max();
 
@@ -67,8 +67,10 @@ namespace waitfree {
     std::size_t pos;
     std::atomic<PopSubDescr<T>*> child;
 
+    base_op* owner;
+
     PopDescr(vector<T>* vec, std::size_t pos)
-        : vec(vec), pos(pos), child(nullptr) {
+        : vec(vec), pos(pos), child(nullptr), owner(nullptr) {
     }
 
     DescriptorType type(void) const override {
@@ -79,28 +81,30 @@ namespace waitfree {
       std::atomic<T*>& spot = this->vec->getSpot(this->pos - 1);
       for (int failures = 0; this->child.load() == nullptr;) {
         if (failures++ >= LIMIT) {
-          PopSubDescr<T>* e1 = nullptr;
-          this->child.compare_exchange_strong(
-              e1, reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed));
+          helper_cas(
+              this->child, static_cast<PopSubDescr<T>*>(nullptr),
+              reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed));
+
+          break;
+        }
+
+        T* expected = spot.load();
+        if (expected == reinterpret_cast<T*>(NotValue)) {
+          helper_cas(
+              this->child, static_cast<PopSubDescr<T>*>(nullptr),
+              reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed));
+        } else if (this->vec->is_descr(expected)) {
+          this->vec->unpack_descr(expected)->complete();
         } else {
-          T* expected = spot.load();
-          if (expected == reinterpret_cast<T*>(NotValue)) {
-            helper_cas(
-                this->child, static_cast<PopSubDescr<T>*>(nullptr),
-                reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed));
-          } else if (vec->is_descr(expected)) {
-            vec->unpack_descr(expected)->complete();
-          } else {
-            auto psh = new PopSubDescr<T>(this, expected);
-            auto packed = vec->pack_descr(psh);
-            if (spot.compare_exchange_strong(expected, packed)) {
-              helper_cas(this->child, static_cast<decltype(psh)>(nullptr), psh);
-              if (this->child.load() == psh) {
-                spot.compare_exchange_strong(packed,
-                                             reinterpret_cast<T*>(NotValue));
-              } else {
-                helper_cas(spot, reinterpret_cast<T*>(this), expected);
-              }
+          auto psh = new PopSubDescr<T>(this, expected);
+          auto packed = this->vec->pack_descr(psh);
+          if (spot.compare_exchange_strong(expected, packed)) {
+            helper_cas(this->child, static_cast<decltype(psh)>(nullptr), psh);
+            if (this->child.load() == psh) {
+              spot.compare_exchange_strong(packed,
+                                           reinterpret_cast<T*>(NotValue));
+            } else {
+              helper_cas(spot, reinterpret_cast<T*>(this), expected);
             }
           }
         }
@@ -154,9 +158,9 @@ namespace waitfree {
   struct PopOp : public base_op {
     vector<T>* vec;
 
-    std::pair<bool, T*> result;
+    alignas(16) std::atomic<std::pair<bool, T*>*> result;
 
-    PopOp(vector<T>* vec) : vec(vec) {
+    PopOp(vector<T>* vec) : vec(vec), result(nullptr) {
     }
 
     OpType type(void) const override {
@@ -164,7 +168,49 @@ namespace waitfree {
     }
 
     bool complete(void) override {
-      return false;
+      while (this->result.load() == nullptr) {
+        auto pos = this->vec->_size.load();
+        if (pos == 0) {
+          this->result.store(new std::pair<bool, T*>{});
+          continue;
+        }
+
+        std::atomic<T*>& spot = this->vec->getSpot(pos);
+        auto expected{spot.load()};
+
+        if (this->vec->is_descr(expected)) {
+          this->vec->unpack_descr(expected)->complete();
+          continue;
+        }
+
+        if (expected != reinterpret_cast<T*>(NotValue)) {
+          ++pos;
+          continue;
+        }
+
+        PopDescr<T>* ph = new PopDescr<T>(this->vec, pos);
+        ph->owner = this;
+
+        if (helper_cas(spot, expected, this->vec->pack_descr(ph))) {
+          auto res = ph->complete();
+          if (res) {
+            assert(helper_cas(
+                this->result, static_cast<std::pair<bool, T*>*>(nullptr),
+                new std::pair<bool, T*>(true, ph->child.load()->val)));
+            this->vec->_size -= 1;
+          } else {
+            --pos;
+          }
+        }
+
+        // std::this_thread::sleep_for(
+        //     std::chrono::milliseconds(this->vec->_num_threads));
+      }
+
+      // std::cerr << this->result.load() << std::endl;
+      assert(this->result.load());
+
+      return true;
     }
   };
 
@@ -254,7 +300,7 @@ namespace waitfree {
     vector<T>* vec;
     T* const value;
 
-    std::size_t result;
+    std::atomic<std::size_t> result;
 
     std::atomic_bool can_return;
 
@@ -305,7 +351,7 @@ namespace waitfree {
         if (helper_cas(spot, expected, this->vec->pack_descr(pd))) {
           auto res = pd->complete();
           if (res) {
-            result = pos;
+            this->result.store(pos);
             this->vec->_size += 1;
             this->done.store(true);
             this->can_return.store(true);
@@ -319,8 +365,9 @@ namespace waitfree {
         }
       }
 
-      while (!this->can_return.load())
+      while (!this->can_return.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(3));
+      }
 
       return true;
     }
@@ -361,10 +408,10 @@ namespace waitfree {
     T* old;
     T* noo;
 
-    std::pair<bool, T*> result;
+    alignas(16) std::atomic<std::pair<bool, T*>*> result;
 
     WriteOp(vector<T>* vec, std::size_t pos, T* old, T* noo)
-        : _vec(vec), pos(pos), old(old), noo(noo) {
+        : _vec(vec), pos(pos), old(old), noo(noo), result(nullptr) {
     }
 
     OpType type(void) const override {
@@ -385,26 +432,24 @@ namespace waitfree {
           _vec->unpack_descr(val)->complete();
           continue;
         } else if (val == reinterpret_cast<T*>(NotValue)) {
-          this->result = std::make_pair(false, nullptr);
+          this->result.store(new std::pair<bool, T*>(false, nullptr));
           return true;
         } else {
           if (val != this->old && !this->done.load()) {
-            this->result = std::make_pair(false, val);
+            this->result.store(new std::pair<bool, T*>(false, val));
             return true;
           }
           WriteOpDesc* d = new WriteOpDesc(this, _vec, this->noo);
           if (helper_cas(ref, val, this->_vec->pack_descr(d))) {
-            this->result = std::make_pair(true, val);
+            this->result.store(new std::pair<bool, T*>(true, val));
             d->complete();
             return true;
           }
         }
       }
-      return false;
+      return true;
     }
   };
-
-  struct DescriptorSet {};
 
   template <typename T>
   struct InternalStorage {};
@@ -494,7 +539,7 @@ namespace waitfree {
   template <typename T>
   struct vector {
     const std::size_t _num_threads;
-    std::vector<std::shared_ptr<base_op>> _thread_ops;
+    std::vector<std::atomic<base_op*>> _thread_ops;
     std::vector<std::size_t> _thread_to_help;
 
     std::atomic<Contiguous<T>*> _storage;
@@ -530,7 +575,7 @@ namespace waitfree {
           return std::make_pair(false, nullptr);
         }
 
-        std::atomic<T*>& spot = this->_storage.load()->getSpot(pos);
+        std::atomic<T*>& spot = this->getSpot(pos);
         T* expected = spot.load();
         if (expected == reinterpret_cast<T*>(NotValue)) {
           auto ph = new PopDescr<T>(this, pos);
@@ -553,12 +598,11 @@ namespace waitfree {
 
       assert(tid != NO_TID);
 
-      PopOp<T>* __po;
+      PopOp<T>* __po = new PopOp<T>(this);
 
-      this->announceOp(tid,
-                       std::shared_ptr<base_op>{__po = new PopOp<T>(this)});
+      this->announceOp(tid, __po);
 
-      return __po->result;
+      return *(__po->result.load());
     }
 
     std::size_t wf_push_back(const std::size_t tid, T* const value) {
@@ -603,12 +647,11 @@ namespace waitfree {
 
       assert(tid != NO_TID);
 
-      PushOp<T>* __po;
+      PushOp<T>* __po = new PushOp<T>(this, value);
 
-      announceOp(tid,
-                 std::shared_ptr<base_op>{__po = new PushOp<T>(this, value)});
+      announceOp(tid, __po);
 
-      return __po->result;
+      return __po->result.load();
     }
 
     std::pair<bool, T*> at(const std::size_t tid, std::size_t pos) {
@@ -654,12 +697,11 @@ namespace waitfree {
 
       assert(tid != NO_TID);
 
-      WriteOp<T>* __wo;
+      WriteOp<T>* __wo = new WriteOp<T>(this, pos, old, noo);
 
-      announceOp(tid, std::shared_ptr<base_op>{
-                          __wo = new WriteOp<T>(this, pos, old, noo)});
+      announceOp(tid, __wo);
 
-      return __wo->result;
+      return *(__wo->result);
     }
 
     std::size_t size(void) const {
@@ -695,8 +737,7 @@ namespace waitfree {
 
     void help(const std::size_t my_tid, const std::size_t tid) {
       // for (;;) {
-      auto t_op =
-          std::atomic_load(&(this->_thread_ops[this->_thread_to_help[tid]]));
+      auto t_op = std::atomic_load(&(this->_thread_ops[tid]));
 
       if (t_op == nullptr) {
         return;
@@ -721,7 +762,7 @@ namespace waitfree {
       help(tid, this->_thread_to_help[tid]);
     }
 
-    void announceOp(const std::size_t tid, const std::shared_ptr<base_op>& op) {
+    void announceOp(const std::size_t tid, base_op* op) {
       if (tid >= this->_num_threads) {
         throw std::runtime_error{"tid out of bounds"};
       }
