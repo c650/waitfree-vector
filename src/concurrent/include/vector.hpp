@@ -47,14 +47,14 @@ namespace waitfree {
   template <typename T>
   struct base_descriptor {
     virtual DescriptorType type(void) const = 0;
-    virtual bool complete(void) = 0;
+    virtual bool complete(std::size_t) = 0;
     virtual T* value(void) const = 0;
   };
 
   struct base_op {
     std::atomic_bool done;
     virtual OpType type(void) const = 0;
-    virtual bool complete(void) = 0;
+    virtual bool complete(std::size_t) = 0;
   };
 
   // type declarations
@@ -84,7 +84,7 @@ namespace waitfree {
       return DescriptorType::POP_DESCR;
     }
 
-    bool complete(void) override {
+    bool complete(std::size_t tid) override {
       std::atomic<T*>& spot = this->vec->getSpot(this->pos - 1);
       for (int failures = 0; this->child.load() == nullptr;) {
         if (failures++ >= LIMIT) {
@@ -101,7 +101,7 @@ namespace waitfree {
               this->child, static_cast<PopSubDescr<T>*>(nullptr),
               reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed));
         } else if (this->vec->is_descr(expected)) {
-          this->vec->unpack_descr(expected)->complete();
+          this->vec->unpack_descr(expected)->complete(tid);
         } else {
           auto psh = new PopSubDescr<T>(this, expected);
           auto packed = this->vec->pack_descr(psh);
@@ -142,7 +142,7 @@ namespace waitfree {
       return DescriptorType::POP_SUB_DESCR;
     }
 
-    bool complete(void) override {
+    bool complete(std::size_t tid) override {
       std::atomic<T*>& spot = this->parent->vec->getSpot(this->parent->pos - 1);
       helper_cas(this->parent->child, static_cast<PopSubDescr<T>*>(nullptr),
                  this);
@@ -174,7 +174,7 @@ namespace waitfree {
       return OpType::POP_OP;
     }
 
-    bool complete(void) override {
+    bool complete(std::size_t tid) override {
       while (this->result.load() == nullptr) {
         auto pos = this->vec->_size.load();
         if (pos == 0) {
@@ -186,7 +186,7 @@ namespace waitfree {
         auto expected{spot.load()};
 
         if (this->vec->is_descr(expected)) {
-          this->vec->unpack_descr(expected)->complete();
+          this->vec->unpack_descr(expected)->complete(tid);
           continue;
         }
 
@@ -199,7 +199,7 @@ namespace waitfree {
         ph->owner = this;
 
         if (helper_cas(spot, expected, this->vec->pack_descr(ph))) {
-          auto res = ph->complete();
+          auto res = ph->complete(tid);
           if (res) {
             assert(helper_cas(
                 this->result, static_cast<std::pair<bool, T*>*>(nullptr),
@@ -242,7 +242,7 @@ namespace waitfree {
       return DescriptorType::PUSH_DESCR;
     }
 
-    bool complete(void) override {
+    bool complete(std::size_t tid) override {
       std::atomic<T*>& spot = this->vec->getSpot(this->pos);
 
       if (this->pos == 0) {
@@ -270,7 +270,7 @@ namespace waitfree {
                      DescriptorState::Failed);
         }
 
-        vec->unpack_descr(current)->complete();
+        vec->unpack_descr(current)->complete(tid);
         current = spot2.load();
       }
 
@@ -319,7 +319,7 @@ namespace waitfree {
       return OpType::PUSH_OP;
     }
 
-    bool complete(void) override {
+    bool complete(std::size_t tid) override {
       // just like pushback
 
       // do the pushback loop,
@@ -333,8 +333,8 @@ namespace waitfree {
       // some PushOp::state will be Pending
       // and then the threads try to CAS a descriptor
       // the winner gets to update PushOp::state to DescriptorPlaced
-      // then all threads call descriptor's complete()
-      // if successful, we are done! (this->done |= complete())
+      // then all threads call descriptor's complete(tid)
+      // if successful, we are done! (this->done |= complete(tid))
       // otherwise, repeat loop
 
       auto pos = this->vec->_size.load();
@@ -343,7 +343,7 @@ namespace waitfree {
         auto expected = spot.load();
 
         if (this->vec->is_descr(expected)) {
-          this->vec->unpack_descr(expected)->complete();
+          this->vec->unpack_descr(expected)->complete(tid);
           continue;
         }
 
@@ -356,7 +356,7 @@ namespace waitfree {
         pd->owner = this;
 
         if (helper_cas(spot, expected, this->vec->pack_descr(pd))) {
-          auto res = pd->complete();
+          auto res = pd->complete(tid);
           if (res) {
             this->result.store(pos);
             this->vec->_size += 1;
@@ -395,7 +395,7 @@ namespace waitfree {
         return DescriptorType::WRITE_OP_DESCR;
       }
 
-      bool complete(void) override {
+      bool complete(std::size_t tid) override {
         auto& ref = this->_vec->getSpot(this->_owner->pos);
 
         helper_cas(this->_owner->result,
@@ -426,14 +426,14 @@ namespace waitfree {
       return OpType::WRITE_OP;
     }
 
-    bool complete(void) override {
+    bool complete(std::size_t tid) override {
       while (this->result.load() == nullptr) {
         auto& ref = this->_vec->getSpot(this->pos);
 
         auto val = ref.load();
 
         if (_vec->is_descr(val)) {
-          _vec->unpack_descr(val)->complete();
+          _vec->unpack_descr(val)->complete(tid);
           continue;
         }
 
@@ -446,7 +446,7 @@ namespace waitfree {
         WriteOpDesc* d = new WriteOpDesc(this, _vec, this->noo);
 
         if (helper_cas(ref, val, this->_vec->pack_descr(d))) {
-          d->complete();
+          d->complete(tid);
           return true;
         }
       }
@@ -468,18 +468,13 @@ namespace waitfree {
 
     ShiftDescr(ShiftOp<T>* op, ShiftDescr<T>* prev, T* val, std::size_t pos)
         : op(op), pos(pos), val(val), prev(prev), next(nullptr) {
-      // std::cerr << "DESC WITH VALUE: " << *this->op->valueGetter(this) <<
-      // std::endl;
     }
 
     DescriptorType type(void) const override {
       return DescriptorType::SHIFT_DESCR;
     }
 
-    bool complete(void) override {
-      // std::cerr <<
-      // "DESCRIPTOR!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" <<
-      // std::endl;
+    bool complete(std::size_t tid) override {
       bool isAssoc = false;
 
       if (this->prev == nullptr) {
@@ -494,7 +489,7 @@ namespace waitfree {
       std::atomic<T*>& spot = this->op->vec->getSpot(this->pos);
       auto packed_desc = this->op->vec->pack_descr(this);
       if (isAssoc) {
-        this->op->complete();
+        this->op->complete(tid);
         helper_cas(spot, packed_desc, this->op->valueGetter(this));
       } else {
         helper_cas(spot, packed_desc, this->val);
@@ -510,16 +505,15 @@ namespace waitfree {
   template <typename T>
   struct ShiftOp : public base_op {
     vector<T>* vec;
-    std::size_t pos, tid;
+    std::size_t pos;
     std::atomic<bool> incomplete;
     std::atomic<ShiftDescr<T>*> next;
     std::function<T*(ShiftDescr<T>*)> valueGetter;
 
     ShiftOp(vector<T>* vec, std::size_t pos,
-            std::function<T*(ShiftDescr<T>*)> valueGetter, std::size_t tid)
+            std::function<T*(ShiftDescr<T>*)> valueGetter)
         : vec(vec),
           pos(pos),
-          tid(tid),
           incomplete(true),
           next(nullptr),
           valueGetter(valueGetter) {
@@ -530,24 +524,17 @@ namespace waitfree {
     }
 
     void clean(void) {
-      // std::cerr << "CLEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAN" << std::endl;
-      // std::cerr << "HERE CLEAN: " << this->pos << ' ' <<
-      // this->vec->getSpot(this->pos).load() << std::endl;
       auto sh = this->next.load();
       for (auto tpos = this->pos; sh != nullptr; tpos++) {
         auto packed_sh = this->vec->pack_descr(sh);
-        /*auto cur = */ helper_cas(this->vec->getSpot(tpos), packed_sh,
-                                   valueGetter(sh) // FUUUUUCK
+        helper_cas(this->vec->getSpot(tpos), packed_sh,
+                                   valueGetter(sh)
         );
         sh = sh->next.load();
       }
-      // for(auto tpos = 0; tpos < this->vec->size(); tpos++) {
-      //   std::cerr << "VALUE: " << tpos << " -> " << *this->vec->getSpot(tpos)
-      //   << std::endl;
-      // }
     }
 
-    bool complete(void) override {
+    bool complete(std::size_t tid) override {
       auto i = this->pos;
       if (i >= this->vec->size()) {
         helper_cas(this->next, static_cast<ShiftDescr<T>*>(nullptr),
@@ -556,13 +543,13 @@ namespace waitfree {
 
       for (int failures = 0; this->next.load() == nullptr;) {
         if (failures++ >= LIMIT) {
-          this->vec->announceOp(this->tid, this);
+          this->vec->announceOp(tid, this);
           return false;
         }
         std::atomic<T*>& spot = this->vec->getSpot(i);
         T* cvalue = spot.load();
         if (this->vec->is_descr(cvalue)) {
-          this->vec->unpack_descr(cvalue)->complete();
+          this->vec->unpack_descr(cvalue)->complete(tid);
         } else if (cvalue == reinterpret_cast<T*>(NotValue)) {
           helper_cas(this->next, static_cast<ShiftDescr<T>*>(nullptr),
                      reinterpret_cast<ShiftDescr<T>*>(DescriptorState::Failed));
@@ -571,11 +558,7 @@ namespace waitfree {
           auto packed_sh = this->vec->pack_descr(sh);
           if (spot.compare_exchange_strong(cvalue, packed_sh)) {
             helper_cas(this->next, static_cast<decltype(sh)>(nullptr), sh);
-            // if(sh == this->next.load()) {
-            //   std::cerr << "PLACED DESCRIPTOR AT POS " << i << std::endl;
-            // }
             if (sh != this->next.load()) {
-              // std::cerr << "FUCKED IT UP" << std::endl;
               helper_cas(spot, packed_sh, cvalue);
             }
           }
@@ -587,27 +570,22 @@ namespace waitfree {
         return false;
       }
 
-      // std::cerr << "HERE: " << i << ' ' << this->vec->getSpot(i).load() <<
-      // std::endl;
-
       while (this->incomplete.load()) {
         i++;
         if (last->value() == nullptr) {
           this->incomplete.store(false);
+          break;
         }
         for (int failures = 0; last->next.load() == nullptr;) {
           if (failures++ >= LIMIT) {
-            this->vec->announceOp(this->tid, this);
+            this->vec->announceOp(tid, this);
             return false;
           }
           std::atomic<T*>& spot = this->vec->getSpot(i);
           T* cvalue = spot.load();
-          // std::cerr << "HERE!!! " << cvalue << std::endl;
           if (this->vec->is_descr(cvalue)) {
-            // std::cerr << "FOUND DESCR!!!!!!!" << std::endl;
             auto desc = this->vec->unpack_descr(cvalue);
             if (desc->type() == DescriptorType::PUSH_DESCR) {
-              // std::cerr << "HERE PUSHBACK" << std::endl;
               auto cdesc = reinterpret_cast<PushDescr<T>*>(desc);
               helper_cas(cdesc->state, DescriptorState::Undecided,
                          DescriptorState::Passed);
@@ -617,7 +595,7 @@ namespace waitfree {
                   cdesc->child, static_cast<PopSubDescr<T>*>(nullptr),
                   reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed));
             }
-            desc->complete();
+            desc->complete(tid);
           } else {
             auto sh = new ShiftDescr<T>(this, last, cvalue, i);
             auto packed_sh = this->vec->pack_descr(sh);
@@ -761,7 +739,7 @@ namespace waitfree {
         if (expected == reinterpret_cast<T*>(NotValue)) {
           auto ph = new PopDescr<T>(this, pos);
           if (spot.compare_exchange_strong(expected, pack_descr(ph))) {
-            auto res = ph->complete();
+            auto res = ph->complete(tid);
             if (res) {
               auto value = ph->child.load()->val;
               this->_size -= 1;
@@ -771,7 +749,7 @@ namespace waitfree {
             }
           }
         } else if (is_descr(expected)) {
-          unpack_descr(expected)->complete();
+          unpack_descr(expected)->complete(tid);
         } else {
           ++pos;
         }
@@ -810,7 +788,7 @@ namespace waitfree {
 
           auto ph = new PushDescr<T>(this, value, pos);
           if (helper_cas(spot, expected, this->pack_descr(ph))) {
-            auto res = ph->complete();
+            auto res = ph->complete(tid);
             if (res) {
               this->_size += 1;
               return pos;
@@ -820,7 +798,7 @@ namespace waitfree {
           }
 
         } else if (is_descr(expected)) {
-          this->unpack_descr(expected)->complete();
+          this->unpack_descr(expected)->complete(tid);
         } else {
           ++pos;
         }
@@ -850,18 +828,19 @@ namespace waitfree {
       return std::make_pair(false, nullptr);
     }
 
-    bool insertAt(std::size_t tid, std::size_t pos, T* val) {
+    bool insertAt(std::size_t tid, std::size_t pos, T* const val) {
       this->help_if_needed(tid);
 
-      std::function<T*(ShiftDescr<T>*)> valueGetter = [&](ShiftDescr<T>* sh) {
+      std::function<T*(ShiftDescr<T>*)> valueGetter = 
+          [val](ShiftDescr<T>* sh) -> T* {
         if (sh->prev == nullptr) {
-          return val; // this might be wrong (maybe not actually)
+          return val;
         } else {
           return sh->prev->val;
         }
       };
-      auto op = new ShiftOp<T>(this, pos, valueGetter, tid);
-      op->complete();
+      auto op = new ShiftOp<T>(this, pos, valueGetter);
+      op->complete(tid);
       if (!(op->incomplete.load())) {
         op->clean();
         this->_size.fetch_add(1);
@@ -882,15 +861,10 @@ namespace waitfree {
           return sh->next.load()->value();
         }
       };
-      auto op = new ShiftOp<T>(this, pos, valueGetter, tid);
-      // std::cerr << "CHECK INCOMPLETE: " << op->incomplete.load() <<
-      // std::endl;
-      bool succ = op->complete();
+      auto op = new ShiftOp<T>(this, pos, valueGetter);
+      bool succ = op->complete(tid);
       if (succ)
         ;
-      // std::cerr << "HERE SUCCCCCCC: " << succ << std::endl;
-      // std::cerr << "CHECK INCOMPLETE: " << op->incomplete.load() <<
-      // std::endl;
       if (!(op->incomplete.load())) {
         op->clean();
         this->_size.fetch_add(-1);
@@ -916,7 +890,7 @@ namespace waitfree {
       for (int failures = 0; failures <= LIMIT; ++failures) {
         auto value = spot.load();
         if (this->is_descr(value)) {
-          this->unpack_descr(value)->complete();
+          this->unpack_descr(value)->complete(tid);
         } else if (value == old) {
           if (helper_cas(spot, value, noo)) {
             return std::make_pair(true, old);
@@ -974,7 +948,7 @@ namespace waitfree {
         return;
       }
 
-      t_op->complete();
+      t_op->complete(my_tid);
 
       std::atomic_compare_exchange_strong(
           &(this->_thread_ops[this->_thread_to_help[tid]]), &t_op,
