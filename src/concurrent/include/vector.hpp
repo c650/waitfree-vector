@@ -527,9 +527,7 @@ namespace waitfree {
       auto sh = this->next.load();
       for (auto tpos = this->pos; sh != nullptr; tpos++) {
         auto packed_sh = this->vec->pack_descr(sh);
-        helper_cas(this->vec->getSpot(tpos), packed_sh,
-                                   valueGetter(sh)
-        );
+        helper_cas(this->vec->getSpot(tpos), packed_sh, valueGetter(sh));
         sh = sh->next.load();
       }
     }
@@ -831,7 +829,7 @@ namespace waitfree {
     bool insertAt(std::size_t tid, std::size_t pos, T* const val) {
       this->help_if_needed(tid);
 
-      std::function<T*(ShiftDescr<T>*)> valueGetter = 
+      std::function<T*(ShiftDescr<T>*)> valueGetter =
           [val](ShiftDescr<T>* sh) -> T* {
         if (sh->prev == nullptr) {
           return val;
