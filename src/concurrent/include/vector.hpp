@@ -46,6 +46,7 @@ namespace waitfree {
   // virtual types
   template <typename T>
   struct base_descriptor {
+    virtual ~base_descriptor(void) = default;
     virtual DescriptorType type(void) const = 0;
     virtual bool complete(void) = 0;
     virtual T* value(void) const = 0;
@@ -78,6 +79,9 @@ namespace waitfree {
 
     PopDescr(vector<T>* vec, std::size_t pos)
         : vec(vec), pos(pos), child(nullptr), owner(nullptr) {
+    }
+
+    ~PopDescr(void) {
     }
 
     DescriptorType type(void) const override {
@@ -136,6 +140,9 @@ namespace waitfree {
     T* val;
 
     PopSubDescr(PopDescr<T>* parent, T* val) : parent(parent), val(val) {
+    }
+
+    ~PopSubDescr(void) {
     }
 
     DescriptorType type(void) const override {
@@ -236,6 +243,12 @@ namespace waitfree {
           pos(pos),
           state(DescriptorState::Undecided),
           owner(nullptr) {
+    }
+
+    PushDescr(void) : PushDescr(nullptr, nullptr, -1) {
+    }
+
+    ~PushDescr(void) {
     }
 
     DescriptorType type(void) const override {
@@ -391,6 +404,9 @@ namespace waitfree {
           : _owner(owner), _vec(vec), _val(val) {
       }
 
+      ~WriteOpDesc(void) {
+      }
+
       DescriptorType type(void) const override {
         return DescriptorType::WRITE_OP_DESCR;
       }
@@ -470,6 +486,9 @@ namespace waitfree {
         : op(op), pos(pos), val(val), prev(prev), next(nullptr) {
       // std::cerr << "DESC WITH VALUE: " << *this->op->valueGetter(this) <<
       // std::endl;
+    }
+
+    ~ShiftDescr(void) {
     }
 
     DescriptorType type(void) const override {
@@ -636,6 +655,41 @@ namespace waitfree {
   };
 
   template <typename T>
+  struct DescriptorSet {
+    template <typename Descr, std::size_t NumDesc = 2>
+    struct Handle {
+    private:
+      std::size_t _last;
+      std::array<Descr*, NumDesc> _arr;
+
+    public:
+      Handle(void) : _last(0) {
+        for (auto& e : this->_arr) {
+          e = new Descr();
+        }
+      }
+
+      ~Handle(void) {
+        for (auto& e : this->_arr) {
+          delete e;
+        }
+      }
+
+      template <typename... Args>
+      Descr* get(Args... args) {
+        auto ptr = this->_arr[this->_last = (this->_last + 1) % NumDesc];
+        delete ptr;
+        return ptr = new Descr(args...);
+      }
+    };
+
+    Handle<PushDescr<T>> _pushDescrHandle;
+
+    DescriptorSet(void) {
+    }
+  };
+
+  template <typename T>
   struct Contiguous {
     vector<T>* vec;
     Contiguous* old;
@@ -730,7 +784,8 @@ namespace waitfree {
     // Each thread gets 2 of each descriptor type per
     // instance of vector<T>.
     // https://stackoverflow.com/a/41801400
-    // static thread_local std::map<vector<T>*, DescriptorSet> descs;
+
+    std::vector<DescriptorSet<T>> _desc_sets;
 
     vector(std::size_t num_threads) : vector(num_threads, 0) {
     }
@@ -740,7 +795,8 @@ namespace waitfree {
           _thread_ops(_num_threads),
           _thread_to_help(_num_threads),
           _storage(new Contiguous<T>(this, nullptr, capacity)),
-          _size(0) {
+          _size(0),
+          _desc_sets(num_threads) {
       static_assert(sizeof(T) >= 4,
                     "underlying type must be at least 4 bytes so that last 2 "
                     "bits of address are available");
@@ -808,7 +864,9 @@ namespace waitfree {
             }
           }
 
-          auto ph = new PushDescr<T>(this, value, pos);
+          // auto ph = new PushDescr<T>(this, value, pos);
+          auto ph =
+              this->_desc_sets[tid]._pushDescrHandle.get(this, value, pos);
           if (helper_cas(spot, expected, this->pack_descr(ph))) {
             auto res = ph->complete();
             if (res) {

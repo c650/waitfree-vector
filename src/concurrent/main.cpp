@@ -162,10 +162,10 @@ void test_insertAt(const int NUM_THREADS) {
 }
 
 int main(void) {
-  // test_pushback(16);
+  test_pushback(16);
   // test_popback(16);
   // test_cwrite(16);
-  test_insertAt(16);
+  // test_insertAt(16);
 
   return 0;
 }
