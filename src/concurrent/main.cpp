@@ -145,7 +145,7 @@ void test_insertAt(const int NUM_THREADS) {
     vec.eraseAt(0, 2);
     // vec.insertAt(0, 0, new int{i + 10});
   }
-  for (int i = 0; i < vec.size(); ++i) {
+  for (std::size_t i = 0; i < vec.size(); ++i) {
     std::cerr << *vec.at(0, i).second << ' ';
   }
   std::cerr << std::endl;

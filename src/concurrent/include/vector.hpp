@@ -519,10 +519,10 @@ namespace waitfree {
             std::function<T*(ShiftDescr<T>*)> valueGetter, std::size_t tid)
         : vec(vec),
           pos(pos),
+          tid(tid),
           incomplete(true),
           next(nullptr),
-          valueGetter(valueGetter),
-          tid(tid) {
+          valueGetter(valueGetter) {
     }
 
     OpType type(void) const override {
@@ -536,8 +536,8 @@ namespace waitfree {
       auto sh = this->next.load();
       for (auto tpos = this->pos; sh != nullptr; tpos++) {
         auto packed_sh = this->vec->pack_descr(sh);
-        auto cur = helper_cas(this->vec->getSpot(tpos), packed_sh,
-                              valueGetter(sh) // FUUUUUCK
+        /*auto cur = */ helper_cas(this->vec->getSpot(tpos), packed_sh,
+                                   valueGetter(sh) // FUUUUUCK
         );
         sh = sh->next.load();
       }
@@ -636,10 +636,7 @@ namespace waitfree {
   };
 
   template <typename T>
-  struct InternalStorage {};
-
-  template <typename T>
-  struct Contiguous : private InternalStorage<T> {
+  struct Contiguous {
     vector<T>* vec;
     Contiguous* old;
     const std::size_t capacity;
@@ -889,6 +886,8 @@ namespace waitfree {
       // std::cerr << "CHECK INCOMPLETE: " << op->incomplete.load() <<
       // std::endl;
       bool succ = op->complete();
+      if (succ)
+        ;
       // std::cerr << "HERE SUCCCCCCC: " << succ << std::endl;
       // std::cerr << "CHECK INCOMPLETE: " << op->incomplete.load() <<
       // std::endl;
