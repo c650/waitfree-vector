@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <map>
 #include <utility>
+#include <functional>
 
 namespace waitfree {
 
@@ -16,9 +17,9 @@ namespace waitfree {
   struct vector;
 
   // enum types
-  enum DescriptorType { PUSH_DESCR, POP_DESCR, POP_SUB_DESCR, WRITE_OP_DESCR };
+  enum DescriptorType { PUSH_DESCR, POP_DESCR, POP_SUB_DESCR, WRITE_OP_DESCR, SHIFT_DESCR };
   enum DescriptorState { Undecided, Failed, Passed };
-  enum OpType { POP_OP, PUSH_OP, WRITE_OP };
+  enum OpType { POP_OP, PUSH_OP, WRITE_OP, SHIFT_OP };
 
   // IsDescriptor when non-nul | 0b01
   // NotValue when null | 0b00
@@ -448,6 +449,212 @@ namespace waitfree {
     }
   };
 
+  
+
+  template <typename T>
+  struct ShiftOp;
+
+  template <typename T>
+  struct ShiftDescr : public base_descriptor<T> {
+    ShiftOp<T>* op;
+    std::size_t pos;
+    T* val;
+    ShiftDescr<T>* prev;
+    std::atomic<ShiftDescr<T>*> next;
+
+    ShiftDescr(ShiftOp<T>* op, ShiftDescr<T>* prev, T* val, std::size_t pos)
+      : op(op), pos(pos), val(val), prev(prev), next(nullptr) {
+        // std::cerr << "DESC WITH VALUE: " << *this->op->valueGetter(this) << std::endl;
+    }
+
+    DescriptorType type(void) const override {
+      return DescriptorType::SHIFT_DESCR;
+    }
+
+    bool complete(void) override {
+      // std::cerr << "DESCRIPTOR!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" << std::endl;
+      bool isAssoc = false;
+      
+      if(this->prev == nullptr) {
+        helper_cas(
+          this->op->next, 
+          static_cast<ShiftDescr<T>*>(nullptr), 
+          this
+        );
+        isAssoc = this->op->next.load() == this;
+      } else {
+        helper_cas(
+          this->prev->next,
+          static_cast<ShiftDescr<T>*>(nullptr),
+          this
+        );
+        isAssoc = this->prev->next.load() == this;
+      }
+
+      std::atomic<T*>& spot = this->op->vec->getSpot(this->pos);
+      auto packed_desc = this->op->vec->pack_descr(this);
+      if(isAssoc) {
+        this->op->complete();
+        helper_cas(
+          spot,
+          packed_desc,
+          this->op->valueGetter(this)
+        );
+      } else {
+        helper_cas(
+          spot,
+          packed_desc,
+          this->val
+        );
+      }
+      return true;
+    }
+
+    T* value(void) const override {
+      return val;
+    }
+  };
+
+  template <typename T>
+  struct ShiftOp : public base_op {
+    vector<T>* vec;
+    std::size_t pos, tid;
+    std::atomic<bool> incomplete;
+    std::atomic<ShiftDescr<T>*> next;
+    std::function<T*(ShiftDescr<T>*)> valueGetter;
+    
+    ShiftOp(vector<T>* vec, std::size_t pos, std::function<T*(ShiftDescr<T>*)> valueGetter, std::size_t tid)
+      : vec(vec), pos(pos), incomplete(true), next(nullptr), valueGetter(valueGetter), tid(tid) {
+    }
+
+    OpType type(void) const override {
+      return OpType::SHIFT_OP;
+    }
+
+    void clean(void) {
+      // std::cerr << "CLEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEAN" << std::endl;
+      // std::cerr << "HERE CLEAN: " << this->pos << ' ' << this->vec->getSpot(this->pos).load() << std::endl;
+      auto sh = this->next.load();
+      for(auto tpos = this->pos; sh != nullptr; tpos++) {
+        auto packed_sh = this->vec->pack_descr(sh);
+        auto cur = helper_cas(
+          this->vec->getSpot(tpos),
+          packed_sh,
+          valueGetter(sh) //FUUUUUCK
+        );
+        sh = sh->next.load();
+      }
+      // for(auto tpos = 0; tpos < this->vec->size(); tpos++) {
+      //   std::cerr << "VALUE: " << tpos << " -> " << *this->vec->getSpot(tpos) << std::endl;
+      // }
+    }
+
+    bool complete(void) override {
+      auto i = this->pos;
+      if(i >= this->vec->size()) {
+        helper_cas(
+          this->next,
+          static_cast<ShiftDescr<T>*>(nullptr),
+          reinterpret_cast<ShiftDescr<T>*>(DescriptorState::Failed)
+        );
+      }
+
+      for(int failures = 0; this->next.load() == nullptr;) {
+        if(failures++ >= LIMIT) {
+          this->vec->announceOp(this->tid, this);
+          return false;
+        }
+        std::atomic<T*>& spot = this->vec->getSpot(i);
+        T* cvalue = spot.load();
+        if(this->vec->is_descr(cvalue)) {
+          this->vec->unpack_descr(cvalue)->complete();
+        } else if(cvalue == reinterpret_cast<T*>(NotValue)) {
+          helper_cas(
+            this->next,
+            static_cast<ShiftDescr<T>*>(nullptr),
+            reinterpret_cast<ShiftDescr<T>*>(DescriptorState::Failed)
+          );
+        } else {
+          auto sh = new ShiftDescr<T>(this, nullptr, cvalue, i);
+          auto packed_sh = this->vec->pack_descr(sh);
+          if(spot.compare_exchange_strong(cvalue, packed_sh)) {
+            helper_cas(
+              this->next,
+              static_cast<decltype(sh)>(nullptr), 
+              sh
+            );
+            // if(sh == this->next.load()) {
+            //   std::cerr << "PLACED DESCRIPTOR AT POS " << i << std::endl;
+            // }
+            if(sh != this->next.load()) {
+              // std::cerr << "FUCKED IT UP" << std::endl;
+              helper_cas(spot, packed_sh, cvalue);
+            }
+          }
+        }
+      }
+
+      auto last = this->next.load();
+      if(last == reinterpret_cast<ShiftDescr<T>*>(DescriptorState::Failed)) {
+        return false;
+      }
+
+      // std::cerr << "HERE: " << i << ' ' << this->vec->getSpot(i).load() << std::endl;
+
+      while(this->incomplete.load()) {
+        i++;
+        if(last->value() == nullptr) {
+          this->incomplete.store(false);
+        }
+        for(int failures = 0; last->next.load() == nullptr;) {
+          if(failures++ >= LIMIT) {
+            this->vec->announceOp(this->tid, this);
+            return false;
+          }
+          std::atomic<T*>& spot = this->vec->getSpot(i);
+          T* cvalue = spot.load();
+          // std::cerr << "HERE!!! " << cvalue << std::endl;
+          if(this->vec->is_descr(cvalue)) {
+            // std::cerr << "FOUND DESCR!!!!!!!" << std::endl;
+            auto desc = this->vec->unpack_descr(cvalue);
+            if(desc->type() == DescriptorType::PUSH_DESCR) {
+              // std::cerr << "HERE PUSHBACK" << std::endl;
+              auto cdesc = reinterpret_cast<PushDescr<T>*>(desc);
+              helper_cas(
+                cdesc->state,
+                DescriptorState::Undecided,
+                DescriptorState::Passed
+              );
+            } else if(desc->type() == DescriptorType::POP_DESCR) {
+              auto cdesc = reinterpret_cast<PopDescr<T>*>(desc);
+              helper_cas(
+                cdesc->child,
+                static_cast<PopSubDescr<T>*>(nullptr),
+                reinterpret_cast<PopSubDescr<T>*>(DescriptorState::Failed)
+              );
+            }
+            desc->complete();
+          } else {
+            auto sh = new ShiftDescr<T>(this, last, cvalue, i);
+            auto packed_sh = this->vec->pack_descr(sh);
+            if(spot.compare_exchange_strong(cvalue, packed_sh)) {
+              helper_cas(
+                last->next,
+                static_cast<decltype(sh)>(nullptr),
+                sh
+              );
+              if(sh != last->next.load()) {
+                helper_cas(spot, packed_sh, cvalue);
+              }
+            }
+          }
+        }
+        last = last->next.load();
+      }
+      return true;
+    }
+  };
+
   template <typename T>
   struct InternalStorage {};
 
@@ -664,6 +871,51 @@ namespace waitfree {
         }
       }
       return std::make_pair(false, nullptr);
+    }
+
+    bool insertAt(std::size_t tid, std::size_t pos, T* val) {
+      this->help_if_needed(tid);
+      
+      std::function<T*(ShiftDescr<T>*)> valueGetter = [&](ShiftDescr<T>* sh) {
+        if(sh->prev == nullptr) {
+          return val; //this might be wrong (maybe not actually)
+        } else {
+          return sh->prev->val;
+        }
+      };
+      auto op = new ShiftOp<T>(this, pos, valueGetter, tid);
+      op->complete();
+      if(!(op->incomplete.load())) {
+        op->clean();
+        this->_size.fetch_add(1);
+        return true;
+      } else {
+        return false;
+      }
+    }
+
+    bool eraseAt(std::size_t tid, std::size_t pos) {
+      this->help_if_needed(tid);
+      
+      std::function<T*(ShiftDescr<T>*)> valueGetter = [](ShiftDescr<T>* sh) -> T* {
+        if(sh->next.load() == nullptr) {
+          return nullptr;
+        } else {
+          return sh->next.load()->value();
+        }
+      };
+      auto op = new ShiftOp<T>(this, pos, valueGetter, tid);
+      // std::cerr << "CHECK INCOMPLETE: " << op->incomplete.load() << std::endl;
+      bool succ = op->complete();
+      // std::cerr << "HERE SUCCCCCCC: " << succ << std::endl;
+      // std::cerr << "CHECK INCOMPLETE: " << op->incomplete.load() << std::endl;
+      if(!(op->incomplete.load())) {
+        op->clean();
+        this->_size.fetch_add(-1);
+        return true;
+      } else {
+        return false;
+      }
     }
 
     std::pair<bool, T*> cwrite(const std::size_t tid, std::size_t pos, T* old,
