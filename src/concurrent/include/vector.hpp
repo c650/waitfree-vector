@@ -111,7 +111,7 @@ namespace waitfree {
               spot.compare_exchange_strong(packed,
                                            reinterpret_cast<T*>(NotValue));
             } else {
-              helper_cas(spot, packed /*reinterpret_cast<T*>(this)*/,
+              helper_cas(spot, this->vec->pack_descr(this),
                          expected); // ***
             }
           }
