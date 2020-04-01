@@ -132,20 +132,20 @@ void test_cwrite(const int NUM_THREADS) {
   std::cout << "\n";
 }
 
-//only tests functionality
+// only tests functionality
 void test_insertAt(const int NUM_THREADS) {
   waitfree::vector<int> vec(NUM_THREADS);
 
   // vec.wf_push_back(0, new int{1});
   // vec.wf_push_back(0, new int{100});
-  for(int i = 0; i < 10; ++i) {
+  for (int i = 0; i < 10; ++i) {
     vec.wf_push_back(0, new int{i});
   }
-  for(int i = 0; i < 5; ++i) {
+  for (int i = 0; i < 5; ++i) {
     vec.eraseAt(0, 2);
     // vec.insertAt(0, 0, new int{i + 10});
   }
-  for(int i = 0; i < vec.size(); ++i) {
+  for (int i = 0; i < vec.size(); ++i) {
     std::cerr << *vec.at(0, i).second << ' ';
   }
   std::cerr << std::endl;
@@ -154,9 +154,10 @@ void test_insertAt(const int NUM_THREADS) {
   // std::cerr << "PREV SIZE: " << vec.size() << std::endl;
   // bool res = vec.eraseAt(0, 0);
   // bool res = vec.insertAt(0, 0, new int{10000});
-  // std::cerr << "AFTER ERASE: " << (res ? "success" : "failed") << ' ' << vec.size() << std::endl;
-  // std::cerr << "HERE: " << (static_cast<int*>(nullptr) == nullptr) << std::endl;
-  // std::cout << vec.at(0, 0).first << ' ' << *vec.at(0, 0).second << std::endl;
+  // std::cerr << "AFTER ERASE: " << (res ? "success" : "failed") << ' ' <<
+  // vec.size() << std::endl; std::cerr << "HERE: " <<
+  // (static_cast<int*>(nullptr) == nullptr) << std::endl; std::cout <<
+  // vec.at(0, 0).first << ' ' << *vec.at(0, 0).second << std::endl;
   return;
 }
 

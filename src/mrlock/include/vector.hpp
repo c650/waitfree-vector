@@ -171,4 +171,4 @@ namespace blocking {
 
     /********* end vector functions *********/
   };
-}; // namespace sequential
+}; // namespace blocking
