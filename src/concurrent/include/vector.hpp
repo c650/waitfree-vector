@@ -117,7 +117,7 @@ namespace waitfree {
         }
       }
 
-      auto e1 = reinterpret_cast<T*>(this);
+      auto e1 = this->vec->pack_descr(this);
       this->vec->getSpot(this->pos).compare_exchange_strong(
           e1, reinterpret_cast<T*>(NotValue));
 
