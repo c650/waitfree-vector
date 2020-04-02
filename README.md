@@ -110,6 +110,8 @@ The slow path is abstracted into descriptors called Ops. Each method (e.g., `cwr
 
 We compared different combinations of operations between our wait-free implementation and the blocking (MRLock) implementation. We expect that our wait-free vector will have a higher throughput than the blocking vector.
 
+Benchmarks are provided in [benchmarks.pdf](/benchmarks.pdf).
+
 ## Citations
 
 In our research, we have looked at a handful of concurrent vector papers. These may be cited down the road, so they are included in addition to works cited earlier in this document.
